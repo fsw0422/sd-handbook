@@ -393,8 +393,11 @@ sequenceDiagram
 
 ### Conflict and Recovery: Serialization Failure
 
-Here, the writes affect different rows, so they can proceed without a write/write conflict.
-The dependency check prevents both transactions from committing the write-skew outcome.
+The writes affect different rows, so there is no write/write conflict.
+Each transaction acts on a premise it read at the start: two doctors are on call.
+The database records each read, and when the other transaction writes a row that was read, it notes that the read may be outdated, without blocking.
+Transaction A commits first, while B's write has not taken effect, so A succeeds.
+When Transaction B commits, A's conflicting write has already committed, so B's premise is false and B is rolled back with a serialization failure.
 
 ```mermaid
 sequenceDiagram
