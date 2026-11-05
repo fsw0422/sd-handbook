@@ -142,6 +142,96 @@ When a refresh token is issued, the client can request a replacement access toke
 A confidential client proves who it is at the token endpoint with its secret or another configured method.
 A public client cannot, so anyone holding its authorization code can try to exchange it.
 
+## PKCE: the attack it stops
+
+PKCE means **Proof Key for Code Exchange**.
+It makes a stolen authorization code useless.
+
+### The attack, without PKCE
+
+TimeFinder also has a phone app. A phone app is a public client: it has no client secret, because anyone can extract one from the app.
+Google sends the code back to `timefinder://callback`.
+A malicious app on the same phone registers the same `timefinder://` scheme and receives the code instead.
+
+```mermaid
+sequenceDiagram
+    participant U as You
+    participant T as TimeFinder phone app
+    participant M as Malicious app on the same phone
+    participant G as Google OAuth server
+
+    U->>T: Connect Google Calendar
+    T->>G: Authorization request with client_id
+    G->>U: Sign in and consent
+    U->>G: Allow
+    G-->>M: Redirect to timefinder://callback with code<br/>The malicious app catches it
+    M->>G: Exchange code with TimeFinder's public client_id
+    G-->>M: Access token for your calendar
+    Note over M,G: No secret is needed, so the code alone is enough
+```
+
+### The same attack, with PKCE
+
+Before each authorization request, the real app makes a random secret, the `code_verifier`, and keeps it in memory.
+It sends only its hash, the `code_challenge`, to Google.
+Google stores the challenge with the code.
+To exchange the code, the caller must show the verifier that matches.
+
+```mermaid
+sequenceDiagram
+    participant T as TimeFinder phone app
+    participant M as Malicious app on the same phone
+    participant G as Google OAuth server
+
+    T->>T: Make random code_verifier and keep it in memory<br/>code_challenge = SHA-256 of the verifier
+    T->>G: Authorization request with code_challenge
+    G->>G: Store the challenge with the code
+    G-->>M: Redirect with code<br/>Intercepted again
+    M->>G: Exchange code without the verifier
+    G->>G: Nothing matches the stored challenge
+    G-->>M: Rejected (invalid_grant)
+    Note over T,G: Only the real app has the verifier
+    T->>G: Exchange code with code_verifier
+    G->>G: SHA-256 of the verifier matches the challenge
+    G-->>T: Access token
+```
+
+- The challenge passes through the browser and redirects, but the verifier never does.
+- A hash cannot be reversed, so seeing the challenge does not reveal the verifier.
+- Web backends benefit too. If an attacker injects a stolen code into another user's authorization attempt, the backend sends that session's verifier, which does not match the injected code's challenge.
+- A client secret alone does not help here: it proves which app is calling, not which authorization attempt the code belongs to.
+
+### When to use it
+
+- **Public clients** (phone and browser apps): always. They have no secret, so PKCE is their only protection for the code exchange.
+- **Confidential clients** (web backends): recommended too. The secret and PKCE protect different things and work together.
+- **Any authorization code flow,** whatever it is used for.
+- **Client credentials:** not applicable. There is no authorization code to protect.
+- **Bind it to the session:** store the verifier with the same pending transaction as `state`, and send exactly that verifier when exchanging that code.
+
+### How the values are made
+
+With the `S256` method:
+
+```text
+code_challenge = BASE64URL(SHA256(ASCII(code_verifier)))
+```
+
+- Make a new verifier for every authorization attempt: 43–128 URL-safe characters with enough randomness to resist guessing.
+- Base64url encoding omits trailing `=` padding.
+- Send the challenge with `code_challenge_method=S256`, and the verifier at the token endpoint.
+
+```python
+import base64
+import hashlib
+import secrets
+
+
+code_verifier = secrets.token_urlsafe(32)  # 32 random bytes -> 43 characters
+digest = hashlib.sha256(code_verifier.encode('ascii')).digest()
+code_challenge = base64.urlsafe_b64encode(digest).rstrip(b'=').decode('ascii')
+```
+
 ## OIDC sign-in
 
 OAuth alone answers "may this app call this API?" It does not tell the app who the user is.
@@ -204,103 +294,15 @@ Before signing the user in, validate the ID token:
 - Use `sub`, not `email`, as the stable user ID, because an email address can change.
 - After sign-in, the app uses its own session, usually a cookie. The ID token is not sent to APIs.
 - An access token or authorization code is not proof of identity. Only a validated ID token is.
+- Use [PKCE](#pkce-the-attack-it-stops) here too. The diagram leaves it out to stay short, but sign-in uses the same code exchange, so the same attack applies. A phone or browser app must use it, and a web backend should.
 
 ## Bind the result to the initiating session
 
 | Mechanism | What to check |
 | --- | --- |
 | `state` | Match the callback to a pending authorization transaction bound to the initiating browser session. This helps prevent cross-site request forgery. |
+| PKCE verifier | Send the verifier saved for that transaction so the authorization server can validate the code exchange. |
 | OIDC `nonce` | If sent, require the same value in the validated ID token to associate it with the sign-in attempt. |
 
 Protect tokens and application sessions separately, use HTTPS for web redirects and token exchanges, and validate registered redirect URIs.
 Multi-factor authentication strengthens user authentication; it does not replace session binding.
-
-## PKCE: the attack it stops
-
-PKCE means **Proof Key for Code Exchange**.
-It makes a stolen authorization code useless.
-
-### The attack, without PKCE
-
-TimeFinder also has a phone app. A phone app is a public client: it has no client secret, because anyone can extract one from the app.
-Google sends the code back to `timefinder://callback`.
-A malicious app on the same phone registers the same `timefinder://` scheme and receives the code instead.
-
-```mermaid
-sequenceDiagram
-    participant U as You
-    participant T as TimeFinder phone app
-    participant M as Malicious app on the same phone
-    participant G as Google OAuth server
-
-    U->>T: Connect Google Calendar
-    T->>G: Authorization request with client_id
-    G->>U: Sign in and consent
-    U->>G: Allow
-    G-->>M: Redirect to timefinder://callback with code<br/>The malicious app catches it
-    M->>G: Exchange code with TimeFinder's public client_id
-    G-->>M: Access token for your calendar
-    Note over M,G: No secret is needed, so the code alone is enough
-```
-
-### The same attack, with PKCE
-
-Before each sign-in, the real app makes a random secret, the `code_verifier`, and keeps it in memory.
-It sends only its hash, the `code_challenge`, to Google.
-Google stores the challenge with the code.
-To exchange the code, the caller must show the verifier that matches.
-
-```mermaid
-sequenceDiagram
-    participant T as TimeFinder phone app
-    participant M as Malicious app on the same phone
-    participant G as Google OAuth server
-
-    T->>T: Make random code_verifier and keep it in memory<br/>code_challenge = SHA-256 of the verifier
-    T->>G: Authorization request with code_challenge
-    G->>G: Store the challenge with the code
-    G-->>M: Redirect with code<br/>Intercepted again
-    M->>G: Exchange code without the verifier
-    G->>G: Nothing matches the stored challenge
-    G-->>M: Rejected (invalid_grant)
-    Note over T,G: Only the real app has the verifier
-    T->>G: Exchange code with code_verifier
-    G->>G: SHA-256 of the verifier matches the challenge
-    G-->>T: Access token
-```
-
-- The challenge passes through the browser and redirects, but the verifier never does.
-- A hash cannot be reversed, so seeing the challenge does not reveal the verifier.
-- Web backends benefit too. If an attacker injects a stolen code into another user's sign-in, the backend sends that session's verifier, which does not match the injected code's challenge.
-- A client secret alone does not help here: it proves which app is calling, not which sign-in attempt the code belongs to.
-
-### When to use it
-
-- **Public clients** (phone and browser apps): always. They have no secret, so PKCE is their only protection for the code exchange.
-- **Confidential clients** (web backends): recommended too. The secret and PKCE protect different things and work together.
-- **Any authorization code flow:** plain OAuth and OIDC sign-in alike. It is not tied to OIDC.
-- **Client credentials:** not applicable. There is no authorization code to protect.
-- **Bind it to the session:** store the verifier with the same pending transaction as `state`, and send exactly that verifier when exchanging that code.
-
-### How the values are made
-
-With the `S256` method:
-
-```text
-code_challenge = BASE64URL(SHA256(ASCII(code_verifier)))
-```
-
-- Make a new verifier for every authorization attempt: 43–128 URL-safe characters with enough randomness to resist guessing.
-- Base64url encoding omits trailing `=` padding.
-- Send the challenge with `code_challenge_method=S256`, and the verifier at the token endpoint.
-
-```python
-import base64
-import hashlib
-import secrets
-
-
-code_verifier = secrets.token_urlsafe(32)  # 32 random bytes -> 43 characters
-digest = hashlib.sha256(code_verifier.encode('ascii')).digest()
-code_challenge = base64.urlsafe_b64encode(digest).rstrip(b'=').decode('ascii')
-```
