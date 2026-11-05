@@ -3,6 +3,157 @@
 OAuth 2.0 lets an application obtain permission to access an API.
 OpenID Connect, or OIDC, adds an identity layer for sign-in.
 
+## How OAuth works, in general
+
+Think of a hotel key card.
+The front desk checks who you are once and gives you a card.
+The card opens only your room, and only until checkout.
+The doors never see your passport. They only check the card.
+
+In OAuth, the front desk is the **authorization server**, the card is the **access token**, the rooms it opens are its **scopes**, and the doors are the **API**.
+
+### Example: an app reads your Google Calendar
+
+A scheduling app called TimeFinder wants to read your Google Calendar to find free slots.
+It must not ask for your Google password.
+
+| Role | In this example |
+| --- | --- |
+| Resource owner | You, with your Google account. |
+| Client | TimeFinder's backend. |
+| Authorization server | Google's OAuth server: `accounts.google.com` for sign-in and consent, `oauth2.googleapis.com` for tokens. |
+| Resource server | The Google Calendar API at `www.googleapis.com/calendar/v3`. |
+
+**Once, before any user:** TimeFinder registers in the Google Cloud console.
+It gets a `client_id` and a client secret, and it registers its callback URL, `https://timefinder.example/oauth/callback`.
+Google will only send codes to registered callback URLs.
+
+**Each time a user connects:**
+
+1. You click **Connect Google Calendar** in TimeFinder.
+2. TimeFinder redirects your browser to Google, saying who it is and what it wants:
+
+   ```text
+   https://accounts.google.com/o/oauth2/v2/auth
+     ?client_id=1234.apps.googleusercontent.com
+     &redirect_uri=https://timefinder.example/oauth/callback
+     &response_type=code
+     &scope=https://www.googleapis.com/auth/calendar.readonly
+     &access_type=offline
+     &state=af0ifjsldkj
+     &code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM
+     &code_challenge_method=S256
+   ```
+
+3. Google signs you in, if you are not signed in already. Your password goes only to Google.
+4. Google shows a consent screen: "TimeFinder wants to see your calendars." You click **Allow**.
+5. Google redirects your browser back to TimeFinder with a short-lived **authorization code**:
+
+   ```text
+   https://timefinder.example/oauth/callback?code=4/0AeanS0b...&state=af0ifjsldkj
+   ```
+
+6. TimeFinder's backend checks that `state` matches what it sent, then exchanges the code for tokens, server to server:
+
+   ```http
+   POST /token HTTP/1.1
+   Host: oauth2.googleapis.com
+   Content-Type: application/x-www-form-urlencoded
+
+   grant_type=authorization_code&code=4/0AeanS0b...
+   &redirect_uri=https://timefinder.example/oauth/callback
+   &client_id=1234.apps.googleusercontent.com&client_secret=<secret>
+   &code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
+   ```
+
+7. Google replies with tokens:
+
+   ```json
+   {
+     "access_token": "ya29.a0Af...",
+     "expires_in": 3599,
+     "token_type": "Bearer",
+     "scope": "https://www.googleapis.com/auth/calendar.readonly",
+     "refresh_token": "1//0g..."
+   }
+   ```
+
+8. TimeFinder calls the Calendar API with the access token:
+
+   ```http
+   GET /calendar/v3/calendars/primary/events HTTP/1.1
+   Host: www.googleapis.com
+   Authorization: Bearer ya29.a0Af...
+   ```
+
+9. After about an hour the access token expires.
+   TimeFinder sends the refresh token to `oauth2.googleapis.com/token` with `grant_type=refresh_token` and gets a new access token, without bothering you.
+
+```mermaid
+sequenceDiagram
+    participant U as Your browser
+    participant T as TimeFinder backend
+    participant G as Google OAuth server
+    participant API as Google Calendar API
+
+    U->>T: Connect Google Calendar
+    T-->>U: Redirect to accounts.google.com<br/>client_id, scope calendar.readonly, state
+    U->>G: Authorization request
+    G->>U: Sign in and consent screen
+    U->>G: Allow
+    G-->>U: Redirect to TimeFinder callback with code and state
+    U->>T: Callback with code and state
+    T->>G: POST oauth2.googleapis.com/token<br/>code, client secret, code_verifier
+    G-->>T: Access token, refresh token
+    T->>API: GET events with Bearer access token
+    API-->>T: Your calendar events
+    T-->>U: Show free slots
+    Note over T,G: About an hour later, refresh token buys a new access token
+```
+
+What each side ends up knowing:
+
+| Party | Knows your Google password? | Holds |
+| --- | --- | --- |
+| Google | Yes | Your account and the permission you granted. |
+| TimeFinder | No | An access token for read-only calendar access, and a refresh token. |
+| Calendar API | No | Only the token in each request, which it checks. |
+
+You can take the permission back at any time at `myaccount.google.com/permissions`.
+Google then revokes TimeFinder's refresh token, so it can no longer get new access tokens.
+
+`access_type=offline` asks Google for a refresh token.
+Without it, TimeFinder gets only the one-hour access token and must send you through consent again.
+Google returns a refresh token only on the first consent, unless the request adds `prompt=consent`.
+
+### OAuth vs "Sign in with Google"
+
+OAuth alone answers **"may this app call this API?"** It does not tell the app who you are.
+"Sign in with Google" is **OIDC** on top of the same flow:
+
+| | OAuth only | OIDC sign-in |
+| --- | --- | --- |
+| Scope | `https://www.googleapis.com/auth/calendar.readonly` | `openid email profile` |
+| Token for the app | Access token | Access token **and an ID token** |
+| Question answered | "Can TimeFinder read this calendar?" | "Who is this user?" |
+
+The ID token is a signed JWT that the app validates itself. Example claims:
+
+```json
+{
+  "iss": "https://accounts.google.com",
+  "aud": "1234.apps.googleusercontent.com",
+  "sub": "110169484474386276334",
+  "email": "you@gmail.com",
+  "nonce": "n-0S6_WzA2Mj",
+  "exp": 1793865600
+}
+```
+
+Use `sub`, not `email`, as the stable user ID. An email address can change.
+
+The rest of this sheet explains each piece in detail: the roles, tokens, client types, PKCE, and how to bind the result to the browser session.
+
 ## The roles
 
 Suppose a scheduling application wants to read your calendar without asking for your calendar password.
