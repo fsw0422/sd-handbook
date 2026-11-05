@@ -1,7 +1,7 @@
 # OAuth Cheat Sheet
 
 OAuth 2.0 lets an application obtain permission to access an API.
-OpenID Connect, or OIDC, adds an identity layer for sign-in.
+To learn who the user is (sign-in), see the [OIDC cheat sheet](oidc.md), which builds on this one.
 
 ## How OAuth works
 
@@ -232,77 +232,12 @@ digest = hashlib.sha256(code_verifier.encode('ascii')).digest()
 code_challenge = base64.urlsafe_b64encode(digest).rstrip(b'=').decode('ascii')
 ```
 
-## OIDC sign-in
-
-OAuth alone answers "may this app call this API?" It does not tell the app who the user is.
-OIDC, as in "Sign in with Google", is the same authorization code flow with two additions:
-
-1. The app asks for the `openid` scope, usually with `email profile`, and sends a random `nonce`.
-2. Google returns an **ID token** next to the access token. The ID token says who the user is, and it is meant for the app itself, not for an API.
-
-| | OAuth only | OIDC sign-in |
-| --- | --- | --- |
-| Question answered | "Can TimeFinder read this calendar?" | "Who is this user?" |
-| Scope | `https://www.googleapis.com/auth/calendar.readonly` | `openid email profile` |
-| The app receives | Access token | Access token **and ID token** |
-
-```mermaid
-sequenceDiagram
-    participant U as Your browser
-    participant T as TimeFinder backend
-    participant G as Google OAuth server
-
-    U->>T: Click Sign in with Google
-    T->>T: Generate state and nonce<br/>Store them for this browser session
-    T-->>U: 302 Location: https://accounts.google.com/o/oauth2/v2/auth<br/>?client_id=1234.apps.googleusercontent.com<br/>&redirect_uri=https://timefinder.example/oauth/callback<br/>&response_type=code<br/>&scope=openid email profile<br/>&state=af0ifjsldkj&nonce=n-0S6_WzA2Mj
-    U->>G: GET https://accounts.google.com/o/oauth2/v2/auth?client_id=...
-    G->>U: Sign in to Google, then consent screen
-    U->>G: Allow
-    G-->>U: 302 Location: https://timefinder.example/oauth/callback<br/>?code=4/0AeanS0b...&state=af0ifjsldkj
-    U->>T: GET /oauth/callback?code=4/0AeanS0b...&state=af0ifjsldkj
-    T->>T: Check state matches this browser session
-    T->>G: POST https://oauth2.googleapis.com/token<br/>grant_type=authorization_code&code=4/0AeanS0b...<br/>&redirect_uri=...&client_id=...&client_secret=...
-    G-->>T: 200 OK<br/>access_token=ya29.a0Af..., id_token=eyJhbGci...
-    T->>T: Validate the ID token<br/>signature, iss, aud, exp, and nonce
-    T->>T: Find or create the user by sub
-    T-->>U: Set-Cookie: session=... (signed in)
-```
-
-The ID token is a signed JWT. Decoded, Google's claims look like this:
-
-```json
-{
-  "iss": "https://accounts.google.com",
-  "aud": "1234.apps.googleusercontent.com",
-  "sub": "110169484474386276334",
-  "email": "you@gmail.com",
-  "nonce": "n-0S6_WzA2Mj",
-  "exp": 1793865600
-}
-```
-
-Before signing the user in, validate the ID token:
-
-| Check | Why |
-| --- | --- |
-| Signature, with Google's published keys | The token really came from Google and was not changed. |
-| `iss` | It was issued by the expected provider. |
-| `aud` equals your `client_id` | It was issued to your app, not to another app. |
-| `exp` | It has not expired. |
-| `nonce` equals the value you stored | It belongs to this sign-in attempt and is not replayed. |
-
-- Use `sub`, not `email`, as the stable user ID, because an email address can change.
-- After sign-in, the app uses its own session, usually a cookie. The ID token is not sent to APIs.
-- An access token or authorization code is not proof of identity. Only a validated ID token is.
-- Use [PKCE](#pkce-the-attack-it-stops) here too. The diagram leaves it out to stay short, but sign-in uses the same code exchange, so the same attack applies. A phone or browser app must use it, and a web backend should.
-
 ## Bind the result to the initiating session
 
 | Mechanism | What to check |
 | --- | --- |
 | `state` | Match the callback to a pending authorization transaction bound to the initiating browser session. This helps prevent cross-site request forgery. |
 | PKCE verifier | Send the verifier saved for that transaction so the authorization server can validate the code exchange. |
-| OIDC `nonce` | If sent, require the same value in the validated ID token to associate it with the sign-in attempt. |
 
 Protect tokens and application sessions separately, use HTTPS for web redirects and token exchanges, and validate registered redirect URIs.
 Multi-factor authentication strengthens user authentication; it does not replace session binding.

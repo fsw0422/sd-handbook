@@ -11,7 +11,7 @@ SAML is a common protocol for that login. SCIM is a separate API that keeps each
 | SAML 2.0 | An XML protocol for SSO. The identity provider sends a signed assertion through the browser. | "How does the app know the company vouches for this user?" | At login, through the browser |
 | SCIM 2.0 | A REST API standard for creating, updating, and removing users and groups | "How does the app learn about new hires, team moves, and leavers?" | Any time, server to server |
 
-SSO can also run on OIDC instead of SAML. See [OIDC sign-in](oauth.md#oidc-sign-in).
+SSO can also run on OIDC instead of SAML. See [SSO with OIDC](oidc.md#sso-with-oidc).
 
 Think of an office building: SAML is the badge reader at the door, and SCIM is HR updating the list of who holds a badge.
 
