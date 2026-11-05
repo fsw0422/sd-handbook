@@ -25,7 +25,7 @@ It reuses OAuth's redirects, endpoints, and authorization code flow, so read the
 
 | | OAuth only | OIDC sign-in |
 | --- | --- | --- |
-| Question answered | "Can TimeFinder read this calendar?" | "Who is this user?" |
+| Question answered | "Can this app read your calendar?" | "Who is this user?" |
 | Scope | `https://www.googleapis.com/auth/calendar.readonly` | `openid email profile` |
 | The app receives | Access token | Access token **and ID token** |
 | The token is for | The API | The app itself |
@@ -43,21 +43,21 @@ The authorization and token endpoints are the same ones the OAuth flow uses.
 
 ## How OIDC sign-in works
 
-"Sign in with Google" on TimeFinder:
+"Sign in with Google" on an app at `example.com`:
 
 ```mermaid
 sequenceDiagram
     participant U as Your browser
-    participant T as TimeFinder backend
+    participant T as App backend
     participant G as Google OAuth server
 
     U->>T: Click Sign in with Google
     T->>T: Generate state and nonce<br/>Store them for this browser session
-    T-->>U: 302 Location: https://accounts.google.com/o/oauth2/v2/auth<br/>?client_id=1234.apps.googleusercontent.com<br/>&redirect_uri=https://timefinder.example/oauth/callback<br/>&response_type=code<br/>&scope=openid email profile<br/>&state=af0ifjsldkj&nonce=n-0S6_WzA2Mj
+    T-->>U: 302 Location: https://accounts.google.com/o/oauth2/v2/auth<br/>?client_id=1234.apps.googleusercontent.com<br/>&redirect_uri=https://example.com/oauth/callback<br/>&response_type=code<br/>&scope=openid email profile<br/>&state=af0ifjsldkj&nonce=n-0S6_WzA2Mj
     U->>G: GET https://accounts.google.com/o/oauth2/v2/auth?client_id=...
     G->>U: Sign in to Google, then consent screen
     U->>G: Allow
-    G-->>U: 302 Location: https://timefinder.example/oauth/callback<br/>?code=4/0AeanS0b...&state=af0ifjsldkj
+    G-->>U: 302 Location: https://example.com/oauth/callback<br/>?code=4/0AeanS0b...&state=af0ifjsldkj
     U->>T: GET /oauth/callback?code=4/0AeanS0b...&state=af0ifjsldkj
     T->>T: Check state matches this browser session
     T->>G: POST https://oauth2.googleapis.com/token<br/>grant_type=authorization_code&code=4/0AeanS0b...<br/>&redirect_uri=...&client_id=...&client_secret=...
@@ -106,14 +106,14 @@ The "single" part comes from **the IdP's own session cookie**, not from any OAut
 2. The second app does its own OIDC sign-in from scratch. It redirects to the IdP, the IdP finds its cookie, skips the login page, and sends a code straight back.
 3. Each app gets its own ID token and creates its own session. The apps never share tokens or cookies. They only trust the same IdP.
 
-Example: your company uses Okta for Slack and Miro.
+Example: your company uses Okta for Slack and Zoom.
 
 ```mermaid
 sequenceDiagram
     participant B as Your browser
     participant S as Slack
     participant O as Okta (IdP)
-    participant M as Miro
+    participant Z as Zoom
 
     B->>S: Open Slack
     S-->>B: 302 to https://acme.okta.com/oauth2/v1/authorize<br/>?client_id=slack&scope=openid email&state=...&nonce=...
@@ -125,15 +125,15 @@ sequenceDiagram
     S->>O: Exchange code for tokens
     O-->>S: ID token for you
     S-->>B: Signed in to Slack
-    Note over B,M: Later, the same day
-    B->>M: Open Miro
-    M-->>B: 302 to https://acme.okta.com/oauth2/v1/authorize<br/>?client_id=miro&scope=openid email&state=...&nonce=...
+    Note over B,Z: Later, the same day
+    B->>Z: Open Zoom
+    Z-->>B: 302 to https://acme.okta.com/oauth2/v1/authorize<br/>?client_id=zoom&scope=openid email&state=...&nonce=...
     B->>O: Authorization request, with the Okta cookie
-    O-->>B: Session found, no login page<br/>302 to Miro callback with code
-    B->>M: Callback with code
-    M->>O: Exchange code for tokens
-    O-->>M: ID token for you
-    M-->>B: Signed in to Miro
+    O-->>B: Session found, no login page<br/>302 to Zoom callback with code
+    B->>Z: Callback with code
+    Z->>O: Exchange code for tokens
+    O-->>Z: ID token for you
+    Z-->>B: Signed in to Zoom
 ```
 
 The same happens with Google every day:
@@ -146,7 +146,7 @@ The same happens with Google every day:
 
 What SSO does **not** mean:
 
-- **No shared session.** `miro.com` cannot read `slack.com`'s cookie. Each app has its own session.
+- **No shared session.** `zoom.us` cannot read `slack.com`'s cookie. Each app has its own session.
 - **No automatic sign-out.** Signing out of one app does not sign you out of the others or of the IdP. That needs extra logout support, such as OIDC Back-Channel Logout (see the [JWT and Distributed Sessions cheat sheet](distributed-sessions.md)).
 - **Still time-limited.** When the IdP session expires, the next app shows the login page again.
 - An app can check for an IdP session without showing any page by adding `prompt=none`. The IdP then returns a code if a session exists, or an error such as `login_required` if not.

@@ -17,37 +17,37 @@ Think of an office building: SAML is the badge reader at the door, and SCIM is H
 
 ## Roles and terms
 
-Example: Acme uses Okta for its employees. Acme buys TimeFinder, a SaaS scheduling app, for the whole company.
+Example: Acme uses Okta for its employees. Acme buys a SaaS app, hosted at `example.com`, for the whole company.
 
 | Term | Meaning | In this example |
 | --- | --- | --- |
 | Identity provider (IdP) | Authenticates users and vouches for them | Acme's Okta |
-| Service provider (SP) | The app that trusts the IdP | TimeFinder |
-| Tenant | One customer's space inside the SP, often called an organization | Acme's TimeFinder organization |
-| Assertion | Signed XML that says who the user is, for which app, and until when | "This is alice@acme.com, for TimeFinder, valid for 5 minutes" |
-| Assertion Consumer Service (ACS) | The SP endpoint that receives the assertion | `https://timefinder.example/sso/saml/acs` |
-| Entity ID | A unique name for each side | `https://timefinder.example` and `http://www.okta.com/exk1a2b3` |
+| Service provider (SP) | The app that trusts the IdP | The SaaS app at `example.com` |
+| Tenant | One customer's space inside the SP, often called an organization | Acme's organization in the app |
+| Assertion | Signed XML that says who the user is, for which app, and until when | "This is alice@acme.com, for the app, valid for 5 minutes" |
+| Assertion Consumer Service (ACS) | The SP endpoint that receives the assertion | `https://example.com/sso/saml/acs` |
+| Entity ID | A unique name for each side | `https://example.com` and `http://www.okta.com/exk1a2b3` |
 | Metadata | XML that describes one side: entity ID, endpoints, and signing certificate | Exchanged once during setup |
 | NameID | The user identifier inside the assertion, usually an email address | `alice@acme.com` |
 | RelayState | An opaque value that comes back unchanged, such as where to go after login | `/calendar/week` |
 
 ## One employee's lifecycle
 
-1. **Hired.** IT assigns Alice to TimeFinder in Okta. Okta calls TimeFinder's SCIM API with `POST /scim/v2/Users`, and TimeFinder creates her account in the Acme organization. (SCIM)
-2. **First login.** Alice types `alice@acme.com` on TimeFinder. She is sent to Okta, signs in with MFA, and lands back in TimeFinder, signed in. (SAML)
+1. **Hired.** IT assigns Alice to the app in Okta. Okta calls the app's SCIM API with `POST /scim/v2/Users`, and the app creates her account in the Acme organization. (SCIM)
+2. **First login.** Alice types `alice@acme.com` on the app. She is sent to Okta, signs in with MFA, and lands back in the app, signed in. (SAML)
 3. **Team move.** Alice joins the Design group in Okta. Okta calls `PATCH /scim/v2/Groups/{id}` to add her. (SCIM)
-4. **Leaves.** IT unassigns her. Okta calls `PATCH /scim/v2/Users/{id}` with `active: false`. TimeFinder deactivates her and ends her sessions. (SCIM)
+4. **Leaves.** IT unassigns her. Okta calls `PATCH /scim/v2/Users/{id}` with `active: false`. The app deactivates her and ends her sessions. (SCIM)
 
 Without SCIM, step 1 happens at her first login instead, which is called just-in-time provisioning.
-Step 4 never reaches TimeFinder: Okta stops new logins, but her TimeFinder account and seat stay until an admin removes them.
+Step 4 never reaches the app: Okta stops new logins, but her account and seat in the app stay until an admin removes them.
 
 ## How SAML login works
 
 ### One-time setup
 
-1. TimeFinder gives Acme its entity ID and ACS URL, or its SP metadata.
-2. Acme creates a TimeFinder app in Okta and gives TimeFinder the Okta SSO URL, entity ID, and signing certificate, or the IdP metadata.
-3. Acme proves it owns `acme.com`, usually with a DNS TXT record such as `timefinder-verification=8f3a...`. TimeFinder now maps `acme.com` to Acme's SSO configuration.
+1. The app gives Acme its entity ID and ACS URL, or its SP metadata.
+2. Acme creates an app integration in Okta and gives the app the Okta SSO URL, entity ID, and signing certificate, or the IdP metadata.
+3. Acme proves it owns `acme.com`, usually with a DNS TXT record such as `example-verification=8f3a...`. The app now maps `acme.com` to Acme's SSO configuration.
 
 Domain verification matters: without it, anyone could claim `acme.com` and capture Acme employees' logins.
 
@@ -58,18 +58,18 @@ The user starts at the app. This is the most common flow.
 ```mermaid
 sequenceDiagram
     participant U as Browser
-    participant T as TimeFinder
+    participant T as App (SP)
     participant O as Acme Okta
 
     U->>T: Enter alice@acme.com
     T->>T: acme.com is verified for Acme<br/>Load the Acme SSO configuration
     T->>T: Build AuthnRequest with ID=_a1b2c3<br/>Remember _a1b2c3 for this browser
-    T-->>U: 302 Location: https://acme.okta.com/app/timefinder/sso/saml<br/>?SAMLRequest=fZJNT8Mw...&RelayState=/calendar/week
-    U->>O: GET https://acme.okta.com/app/timefinder/sso/saml?SAMLRequest=...
+    T-->>U: 302 Location: https://acme.okta.com/app/example/sso/saml<br/>?SAMLRequest=fZJNT8Mw...&RelayState=/calendar/week
+    U->>O: GET https://acme.okta.com/app/example/sso/saml?SAMLRequest=...
     O->>U: Sign in to Okta, with MFA
     U->>O: Credentials
     O-->>U: HTML form that submits itself<br/>SAMLResponse=PHNhbWxwOlJlc3Bvbn...&RelayState=/calendar/week
-    U->>T: POST https://timefinder.example/sso/saml/acs
+    U->>T: POST https://example.com/sso/saml/acs
     T->>T: Validate the response and its signature<br/>InResponseTo must equal _a1b2c3
     T->>T: Find or create the user by NameID
     T-->>U: Set-Cookie: session=...<br/>302 Location: /calendar/week
@@ -90,9 +90,9 @@ AuthnRequest, before encoding:
 
 ```xml
 <samlp:AuthnRequest ID="_a1b2c3" Version="2.0" IssueInstant="2026-11-05T09:00:00Z"
-    AssertionConsumerServiceURL="https://timefinder.example/sso/saml/acs"
+    AssertionConsumerServiceURL="https://example.com/sso/saml/acs"
     ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST">
-  <saml:Issuer>https://timefinder.example</saml:Issuer>
+  <saml:Issuer>https://example.com</saml:Issuer>
   <samlp:NameIDPolicy Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"/>
 </samlp:AuthnRequest>
 ```
@@ -101,7 +101,7 @@ Response, trimmed to the parts the app checks:
 
 ```xml
 <samlp:Response ID="_r9" InResponseTo="_a1b2c3"
-    Destination="https://timefinder.example/sso/saml/acs">
+    Destination="https://example.com/sso/saml/acs">
   <samlp:Status>
     <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
   </samlp:Status>
@@ -112,13 +112,13 @@ Response, trimmed to the parts the app checks:
       <saml:NameID>alice@acme.com</saml:NameID>
       <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
         <saml:SubjectConfirmationData InResponseTo="_a1b2c3"
-            Recipient="https://timefinder.example/sso/saml/acs"
+            Recipient="https://example.com/sso/saml/acs"
             NotOnOrAfter="2026-11-05T09:05:00Z"/>
       </saml:SubjectConfirmation>
     </saml:Subject>
     <saml:Conditions NotBefore="2026-11-05T08:59:30Z" NotOnOrAfter="2026-11-05T09:05:00Z">
       <saml:AudienceRestriction>
-        <saml:Audience>https://timefinder.example</saml:Audience>
+        <saml:Audience>https://example.com</saml:Audience>
       </saml:AudienceRestriction>
     </saml:Conditions>
     <saml:AttributeStatement>
@@ -148,7 +148,7 @@ Use a mature SAML library with secure validation turned on. XML parsing and sign
 
 ### SP-initiated vs IdP-initiated
 
-In IdP-initiated login, Alice clicks the TimeFinder tile on her Okta dashboard. Okta posts an assertion to TimeFinder without any AuthnRequest.
+In IdP-initiated login, Alice clicks the app's tile on her Okta dashboard. Okta posts an assertion to the app without any AuthnRequest.
 
 | | SP-initiated | IdP-initiated |
 | --- | --- | --- |
@@ -177,7 +177,7 @@ flowchart TD
 | Setting | Example | Note |
 | --- | --- | --- |
 | IdP entity ID | `http://www.okta.com/exk1a2b3` | Checked against `Issuer`. |
-| IdP SSO URL | `https://acme.okta.com/app/timefinder/sso/saml` | Where AuthnRequests go. |
+| IdP SSO URL | `https://acme.okta.com/app/example/sso/saml` | Where AuthnRequests go. |
 | Signing certificates | X.509 in PEM format | Allow two during rotation. Warn admins before one expires. |
 | Verified domains | `acme.com`, `acme.co.uk` | Decide which users go to this IdP. |
 | Enforcement | Optional or required | Keep a break-glass admin who can sign in if the IdP breaks. |
@@ -203,12 +203,12 @@ SCIM 2.0 is defined in RFC 7643, the schema, and RFC 7644, the protocol. The app
 
 ### Setup
 
-1. An Acme admin enables SCIM in TimeFinder. TimeFinder shows a base URL and a bearer token, once.
+1. An Acme admin enables SCIM in the app. The app shows a base URL and a bearer token, once.
 2. The admin pastes both into the Okta app.
-3. Okta now calls TimeFinder whenever the assigned users or groups change.
+3. Okta now calls the app whenever the assigned users or groups change.
 
 ```text
-Base URL:  https://timefinder.example/scim/v2
+Base URL:  https://example.com/scim/v2
 Header:    Authorization: Bearer 7Hq...   (one token per tenant)
 ```
 
@@ -227,9 +227,9 @@ Header:    Authorization: Bearer 7Hq...   (one token per tenant)
 ```mermaid
 sequenceDiagram
     participant O as Acme Okta
-    participant T as TimeFinder SCIM API
+    participant T as App SCIM API
 
-    Note over O,T: Alice is assigned to TimeFinder
+    Note over O,T: Alice is assigned to the app
     O->>T: GET /scim/v2/Users?filter=userName eq "alice@acme.com"<br/>Authorization: Bearer 7Hq...
     T->>T: The token identifies the Acme tenant
     T-->>O: 200 OK, totalResults 0
@@ -251,7 +251,7 @@ Create a user:
 
 ```http
 POST /scim/v2/Users HTTP/1.1
-Host: timefinder.example
+Host: example.com
 Authorization: Bearer 7Hq...
 Content-Type: application/scim+json
 
@@ -269,7 +269,7 @@ Deactivate a user:
 
 ```http
 PATCH /scim/v2/Users/2819c223 HTTP/1.1
-Host: timefinder.example
+Host: example.com
 Authorization: Bearer 7Hq...
 Content-Type: application/scim+json
 

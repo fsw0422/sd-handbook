@@ -5,32 +5,32 @@ To learn who the user is (sign-in), see the [OIDC cheat sheet](oidc.md), which b
 
 ## How OAuth works
 
-Example: a scheduling app, TimeFinder, wants to read your Google Calendar without asking for your Google password.
+Example: a scheduling app at `example.com` wants to read your Google Calendar without asking for your Google password.
 
 | Role | Responsibility | In this example |
 | --- | --- | --- |
 | Resource owner | Can authorize access to the protected resources. | You, with your Google account. |
-| Client | Requests access and uses the resulting token. | TimeFinder's backend. |
+| Client | Requests access and uses the resulting token. | The app's backend. |
 | Authorization server | Checks authorization requests and issues tokens. | Google: `accounts.google.com` and `oauth2.googleapis.com`. |
 | Resource server | Hosts the protected API and enforces access rules. | Google Calendar API. |
 
 ```mermaid
 sequenceDiagram
     participant U as Your browser
-    participant T as TimeFinder backend
+    participant T as App backend
     participant G as Google OAuth server
     participant API as Google Calendar API
 
-    Note over T,G: Once - TimeFinder registers in the Google Cloud console<br/>and gets client_id, client secret, and a registered callback URL
+    Note over T,G: Once - the app registers in the Google Cloud console<br/>and gets client_id, client secret, and a registered callback URL
     U->>T: Click Connect Google Calendar
-    T-->>U: 302 Location: https://accounts.google.com/o/oauth2/v2/auth<br/>?client_id=1234.apps.googleusercontent.com<br/>&redirect_uri=https://timefinder.example/oauth/callback<br/>&response_type=code<br/>&scope=https://www.googleapis.com/auth/calendar.readonly<br/>&access_type=offline<br/>&state=af0ifjsldkj
+    T-->>U: 302 Location: https://accounts.google.com/o/oauth2/v2/auth<br/>?client_id=1234.apps.googleusercontent.com<br/>&redirect_uri=https://example.com/oauth/callback<br/>&response_type=code<br/>&scope=https://www.googleapis.com/auth/calendar.readonly<br/>&access_type=offline<br/>&state=af0ifjsldkj
     U->>G: GET https://accounts.google.com/o/oauth2/v2/auth?client_id=...
-    G->>U: Sign in to Google, then consent screen<br/>TimeFinder wants to see your calendars
+    G->>U: Sign in to Google, then consent screen<br/>The app wants to see your calendars
     U->>G: Allow
-    G-->>U: 302 Location: https://timefinder.example/oauth/callback<br/>?code=4/0AeanS0b...&state=af0ifjsldkj
+    G-->>U: 302 Location: https://example.com/oauth/callback<br/>?code=4/0AeanS0b...&state=af0ifjsldkj
     U->>T: GET /oauth/callback?code=4/0AeanS0b...&state=af0ifjsldkj
     T->>T: Check state matches this browser session
-    T->>G: POST https://oauth2.googleapis.com/token<br/>grant_type=authorization_code<br/>&code=4/0AeanS0b...<br/>&redirect_uri=https://timefinder.example/oauth/callback<br/>&client_id=1234.apps.googleusercontent.com<br/>&client_secret=...
+    T->>G: POST https://oauth2.googleapis.com/token<br/>grant_type=authorization_code<br/>&code=4/0AeanS0b...<br/>&redirect_uri=https://example.com/oauth/callback<br/>&client_id=1234.apps.googleusercontent.com<br/>&client_secret=...
     G-->>T: 200 OK<br/>access_token=ya29.a0Af..., expires_in=3599<br/>token_type=Bearer, refresh_token=1//0g...
     T->>API: GET https://www.googleapis.com/calendar/v3/calendars/primary/events<br/>Authorization: Bearer ya29.a0Af...
     API-->>T: 200 OK with your calendar events
@@ -40,9 +40,9 @@ sequenceDiagram
     G-->>T: 200 OK with a new access_token, no user involved
 ```
 
-`access_type=offline` asks Google for a refresh token. Without it, TimeFinder gets only the one-hour access token.
+`access_type=offline` asks Google for a refresh token. Without it, the app gets only the one-hour access token.
 
-- Your password goes only to Google. TimeFinder only ever holds tokens.
+- Your password goes only to Google. The app only ever holds tokens.
 - The token is limited to its **scope**, here read-only calendar access.
 - You can revoke the access at any time at `myaccount.google.com/permissions`.
 
@@ -78,7 +78,7 @@ With the **client credentials** grant, a confidential client authenticates direc
 | --- | --- | --- |
 | Acts as | A user, with their consent | The app itself |
 | User involved? | Yes: sign in and consent | No |
-| The token means | "TimeFinder, for Alice" | "The billing service" |
+| The token means | "This app, for Alice" | "The billing service" |
 | Can access | That user's data, within the scope | What the app itself was granted |
 | Refresh token? | Often | No. Request a new token instead. |
 
@@ -110,7 +110,7 @@ Cache the token in memory and request a new one through the same flow when it ex
 A backend that saves users' refresh tokens in its database is **not** application-only access:
 
 1. Alice connects Google Calendar through the user flow, with `access_type=offline`.
-2. TimeFinder saves Alice's refresh token in its database, encrypted.
+2. The app saves Alice's refresh token in its database, encrypted.
 3. At 3 AM a sync job loads it, gets a fresh access token, and reads Alice's calendar.
 
 The job runs without Alice present, but it still acts **as Alice**, with her consent, and it stops working if she revokes access.
@@ -149,23 +149,23 @@ It makes a stolen authorization code useless.
 
 ### The attack, without PKCE
 
-TimeFinder also has a phone app. A phone app is a public client: it has no client secret, because anyone can extract one from the app.
-Google sends the code back to `timefinder://callback`.
-A malicious app on the same phone registers the same `timefinder://` scheme and receives the code instead.
+The app also has a phone version. A phone app is a public client: it has no client secret, because anyone can extract one from the app.
+Google sends the code back to `exampleapp://callback`.
+A malicious app on the same phone registers the same `exampleapp://` scheme and receives the code instead.
 
 ```mermaid
 sequenceDiagram
     participant U as You
-    participant T as TimeFinder phone app
+    participant T as Real phone app
     participant M as Malicious app on the same phone
     participant G as Google OAuth server
 
     U->>T: Connect Google Calendar
-    T->>G: Open in the browser: https://accounts.google.com/o/oauth2/v2/auth<br/>?client_id=1234.apps.googleusercontent.com<br/>&redirect_uri=timefinder://callback<br/>&response_type=code<br/>&scope=https://www.googleapis.com/auth/calendar.readonly<br/>&state=af0ifjsldkj
+    T->>G: Open in the browser: https://accounts.google.com/o/oauth2/v2/auth<br/>?client_id=1234.apps.googleusercontent.com<br/>&redirect_uri=exampleapp://callback<br/>&response_type=code<br/>&scope=https://www.googleapis.com/auth/calendar.readonly<br/>&state=af0ifjsldkj
     G->>U: Sign in and consent
     U->>G: Allow
-    G-->>M: Redirect to timefinder://callback?code=4/0AeanS0b...&state=af0ifjsldkj<br/>The malicious app catches it
-    M->>G: POST https://oauth2.googleapis.com/token<br/>grant_type=authorization_code&code=4/0AeanS0b...<br/>&redirect_uri=timefinder://callback<br/>&client_id=1234.apps.googleusercontent.com
+    G-->>M: Redirect to exampleapp://callback?code=4/0AeanS0b...&state=af0ifjsldkj<br/>The malicious app catches it
+    M->>G: POST https://oauth2.googleapis.com/token<br/>grant_type=authorization_code&code=4/0AeanS0b...<br/>&redirect_uri=exampleapp://callback<br/>&client_id=1234.apps.googleusercontent.com
     G-->>M: 200 OK<br/>access_token=ya29.a0Af... for your calendar
     Note over M,G: No secret is needed, so the code alone is enough
 ```
@@ -179,19 +179,19 @@ To exchange the code, the caller must show the verifier that matches.
 
 ```mermaid
 sequenceDiagram
-    participant T as TimeFinder phone app
+    participant T as Real phone app
     participant M as Malicious app on the same phone
     participant G as Google OAuth server
 
     T->>T: Make random code_verifier and keep it in memory<br/>dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk<br/>code_challenge = BASE64URL(SHA-256(verifier))
-    T->>G: Open in the browser: https://accounts.google.com/o/oauth2/v2/auth<br/>?client_id=1234.apps.googleusercontent.com<br/>&redirect_uri=timefinder://callback<br/>&response_type=code<br/>&scope=https://www.googleapis.com/auth/calendar.readonly<br/>&state=af0ifjsldkj<br/>&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM<br/>&code_challenge_method=S256
+    T->>G: Open in the browser: https://accounts.google.com/o/oauth2/v2/auth<br/>?client_id=1234.apps.googleusercontent.com<br/>&redirect_uri=exampleapp://callback<br/>&response_type=code<br/>&scope=https://www.googleapis.com/auth/calendar.readonly<br/>&state=af0ifjsldkj<br/>&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM<br/>&code_challenge_method=S256
     G->>G: Store the challenge with the code
-    G-->>M: Redirect to timefinder://callback?code=4/0AeanS0b...&state=af0ifjsldkj<br/>Intercepted again
-    M->>G: POST https://oauth2.googleapis.com/token<br/>grant_type=authorization_code&code=4/0AeanS0b...<br/>&redirect_uri=timefinder://callback<br/>&client_id=1234.apps.googleusercontent.com<br/>(no code_verifier)
+    G-->>M: Redirect to exampleapp://callback?code=4/0AeanS0b...&state=af0ifjsldkj<br/>Intercepted again
+    M->>G: POST https://oauth2.googleapis.com/token<br/>grant_type=authorization_code&code=4/0AeanS0b...<br/>&redirect_uri=exampleapp://callback<br/>&client_id=1234.apps.googleusercontent.com<br/>(no code_verifier)
     G->>G: Nothing matches the stored challenge
     G-->>M: 400 Bad Request<br/>error=invalid_grant
     Note over T,G: On a normal run, the code reaches the real app,<br/>which is the only one holding the verifier
-    T->>G: POST https://oauth2.googleapis.com/token<br/>grant_type=authorization_code&code=4/0AeanS0b...<br/>&redirect_uri=timefinder://callback<br/>&client_id=1234.apps.googleusercontent.com<br/>&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
+    T->>G: POST https://oauth2.googleapis.com/token<br/>grant_type=authorization_code&code=4/0AeanS0b...<br/>&redirect_uri=exampleapp://callback<br/>&client_id=1234.apps.googleusercontent.com<br/>&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
     G->>G: BASE64URL(SHA-256(code_verifier)) matches the stored challenge
     G-->>T: 200 OK<br/>access_token=ya29.a0Af...
 ```
