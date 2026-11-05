@@ -35,4 +35,5 @@ These are study notes. The book and its PDF are not included.
 - [OIDC Cheat Sheet](cheatsheets/oidc.md): what OIDC adds to OAuth, sign-in with Google, ID token validation, and how many apps sharing one IdP gives SSO.
 - [JWT and Distributed Sessions Cheat Sheet](cheatsheets/distributed-sessions.md): authorization claims, session storage, token validation, caching, and revocation.
 - [SSO, SAML, and SCIM Cheat Sheet](cheatsheets/sso-saml-scim.md): how SAML login works, validating assertions, SP- versus IdP-initiated login, domain verification, JIT versus SCIM provisioning, and the SCIM API.
+- [Passkeys and WebAuthn Cheat Sheet](cheatsheets/passkeys.md): passkey registration and sign-in with real messages, what gets signed and checked, why phishing fails, native apps, cross-device sign-in, keeping challenges across servers, and recovery.
 - [HTTP and TLS Cheat Sheet](cheatsheets/tls-docsign.md): HTTP and HTTPS, cryptographic keys, key agreement, CA certificates, TLS handshakes, and how electronic signatures sign and verify documents.
