@@ -15,6 +15,54 @@
 
 A cookie, a JWT, and a session describe different parts of the design. Choosing JWTs does not automatically make the whole system stateless.
 
+## What a JWT looks like
+
+**A JWT is three base64url strings joined by dots: `header.payload.signature`.** This classic example token is signed with HS256:
+
+```text
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
+```
+
+Split at the dots:
+
+```text
+header     eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
+payload    eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ
+signature  SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
+```
+
+| Part | Decoded | What it does |
+| --- | --- | --- |
+| Header | `{"alg":"HS256","typ":"JWT"}` | Names the signing algorithm. |
+| Payload | `{"sub":"1234567890","name":"John Doe","iat":1516239022}` | Holds the claims: who the token is about, and when it was issued. |
+| Signature | 32 raw bytes | HMAC-SHA256 over `header.payload`, here keyed with the example secret `your-256-bit-secret`. |
+
+The issuer builds it like this:
+
+```text
+part1 = base64url(header JSON)
+part2 = base64url(payload JSON)
+part3 = base64url(sign(key, part1 + "." + part2))
+
+token = part1 + "." + part2 + "." + part3
+```
+
+A verifier recomputes the signature over the first two parts, so changing one character of the payload breaks it.
+
+A real access token or ID token has the same shape, only longer. Its header usually names an asymmetric algorithm and a key ID, as shown in [JWT, JWS, and JWE](#jwt-jws-and-jwe). Its payload carries claims such as `iss`, `aud`, and `exp`, as shown in [authorization claims in JWTs](#authorization-claims-in-jwts). The signature's length depends on the algorithm:
+
+| Algorithm | Signature | Base64url characters |
+| --- | --- | --- |
+| HS256 | 32 bytes | 43 |
+| ES256 | 64 bytes | 86 |
+| RS256 with a 2048-bit key | 256 bytes | 342 |
+
+- **Almost every JWT starts with `eyJ`.** That is `{"` in base64url, so JWTs are easy to spot in logs and headers.
+- **Anyone can decode it without a key.** The signature stops changes but hides nothing, so keep secrets out of the payload.
+- **It usually travels as a bearer token:** `Authorization: Bearer eyJ...`.
+- **An encrypted JWT (JWE) has five parts** instead of three, as the next section shows.
+- **Don't paste real tokens into online decoders.** A live token works as a credential until it expires.
+
 ## JWT, JWS, and JWE
 
 **"JWT" almost always means a signed JWS token, so anyone holding it can read the payload.** The JWT specification defines only the claims set. JWS and JWE define how those claims are protected. A JWS header and payload are only base64url-encoded JSON, so the token's security depends on checking the signature.
