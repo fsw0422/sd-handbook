@@ -45,7 +45,6 @@ sequenceDiagram
 - Your password goes only to Google. TimeFinder only ever holds tokens.
 - The token is limited to its **scope**, here read-only calendar access.
 - You can revoke the access at any time at `myaccount.google.com/permissions`.
-- "Sign in with Google" is the same flow with the `openid` scope. Google then also returns an ID token that says who you are (see [OIDC sign-in](#oidc-sign-in)).
 
 The authorization server and resource server are separate roles even when one provider operates both.
 A **scope** names a requested permission, such as `calendar.read`.
@@ -128,7 +127,6 @@ Quick test: ask whose permission the token carries. A specific user's means user
 | Authorization code | Short-lived, single-use value exchanged at the token endpoint. It is bound to the client and redirect URI. |
 | Access token | Allows access to the intended API within the granted permissions. |
 | Refresh token | An optional credential presented to the authorization server to obtain a new access token. It is not sent to the resource API. |
-| ID token | OIDC identity information intended for the client to validate during sign-in. |
 | Application session | The application's own login state, often represented by a session cookie. |
 
 The authorization server determines an access token's lifetime.
