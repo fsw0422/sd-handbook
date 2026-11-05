@@ -104,7 +104,6 @@ sequenceDiagram
 ```
 
 This flow has no browser redirect or authorization code.
-PKCE protects code exchange, so it is not part of this grant.
 Cache the token in memory and request a new one through the same flow when it expires.
 
 ### Not the same as storing user tokens
@@ -126,7 +125,7 @@ Quick test: ask whose permission the token carries. A specific user's means user
 | --- | --- |
 | `client_id` | Public identifier for the application. |
 | Client secret | Authenticates a confidential client to the authorization server. It does not identify the user. |
-| Authorization code | Short-lived, single-use value exchanged at the token endpoint. It is bound to the client, redirect URI, and PKCE challenge when PKCE is used. |
+| Authorization code | Short-lived, single-use value exchanged at the token endpoint. It is bound to the client and redirect URI. |
 | Access token | Allows access to the intended API within the granted permissions. |
 | Refresh token | An optional credential presented to the authorization server to obtain a new access token. It is not sent to the resource API. |
 | ID token | OIDC identity information intended for the client to validate during sign-in. |
@@ -142,9 +141,8 @@ When a refresh token is issued, the client can request a replacement access toke
 | Public | No. A secret embedded in distributed client code can be extracted. | A browser application or native app. |
 | Confidential | Yes, within its protected server environment. | A web backend performing the token exchange. |
 
-For user authorization, use authorization code flow with [PKCE](#pkce-the-attack-it-stops) for public clients.
-PKCE is also recommended for confidential clients, which still authenticate at the token endpoint using a secret or another configured method.
-Client authentication and PKCE protect different parts of the flow and can be used together.
+A confidential client proves who it is at the token endpoint with its secret or another configured method.
+A public client cannot, so anyone holding its authorization code can try to exchange it.
 
 ## OIDC sign-in
 
@@ -208,7 +206,6 @@ Before signing the user in, validate the ID token:
 - Use `sub`, not `email`, as the stable user ID, because an email address can change.
 - After sign-in, the app uses its own session, usually a cookie. The ID token is not sent to APIs.
 - An access token or authorization code is not proof of identity. Only a validated ID token is.
-- OIDC does not require PKCE, and PKCE does not require OIDC. PKCE protects the code exchange in any authorization code flow, so it can be added here too (see [PKCE](#pkce-the-attack-it-stops)).
 
 ## Bind the result to the initiating session
 
@@ -216,10 +213,9 @@ Before signing the user in, validate the ID token:
 | --- | --- |
 | `state` | Match the callback to a pending authorization transaction bound to the initiating browser session. This helps prevent cross-site request forgery. |
 | OIDC `nonce` | If sent, require the same value in the validated ID token to associate it with the sign-in attempt. |
-| [PKCE](#pkce-the-attack-it-stops) | If used, present the verifier saved for that transaction so the authorization server can validate the code exchange. |
 
 Protect tokens and application sessions separately, use HTTPS for web redirects and token exchanges, and validate registered redirect URIs.
-Multi-factor authentication strengthens user authentication; it does not replace PKCE or session binding.
+Multi-factor authentication strengthens user authentication; it does not replace session binding.
 
 ## PKCE: the attack it stops
 
@@ -279,6 +275,14 @@ sequenceDiagram
 - A hash cannot be reversed, so seeing the challenge does not reveal the verifier.
 - Web backends benefit too. If an attacker injects a stolen code into another user's sign-in, the backend sends that session's verifier, which does not match the injected code's challenge.
 - A client secret alone does not help here: it proves which app is calling, not which sign-in attempt the code belongs to.
+
+### When to use it
+
+- **Public clients** (phone and browser apps): always. They have no secret, so PKCE is their only protection for the code exchange.
+- **Confidential clients** (web backends): recommended too. The secret and PKCE protect different things and work together.
+- **Any authorization code flow:** plain OAuth and OIDC sign-in alike. It is not tied to OIDC.
+- **Client credentials:** not applicable. There is no authorization code to protect.
+- **Bind it to the session:** store the verifier with the same pending transaction as `state`, and send exactly that verifier when exchanging that code.
 
 ### How the values are made
 
