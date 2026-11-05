@@ -31,7 +31,8 @@ These are study notes. The book and its PDF are not included.
 - [DynamoDB Cheat Sheet](cheatsheets/dynamodb.md): keys, indexes, single-table design, capacity, Global Tables, DAX, and DynamoDB Streams versus Kinesis.
 - [gRPC and HTTP/2 Cheat Sheet](cheatsheets/grpc.md): Protobuf, multiplexing, channels, deadlines, retries, keepalive, and observability.
 - [Service Boundaries and Testing Cheat Sheet](cheatsheets/testing.md): domain ownership, ports and adapters, test boundaries, and gradual module extraction.
-- [OAuth Cheat Sheet](cheatsheets/oauth.md): how OAuth works with Google as the example, application-only access, tokens and client types, the code-interception attack PKCE stops, OIDC sign-in, and session binding.
+- [OAuth Cheat Sheet](cheatsheets/oauth.md): how OAuth works with Google as the example, application-only access, tokens and client types, the code-interception attack PKCE stops, and session binding.
+- [OIDC Cheat Sheet](cheatsheets/oidc.md): what OIDC adds to OAuth, sign-in with Google, ID token validation, and how many apps sharing one IdP gives SSO.
 - [JWT and Distributed Sessions Cheat Sheet](cheatsheets/distributed-sessions.md): authorization claims, session storage, token validation, caching, and revocation.
 - [SSO, SAML, and SCIM Cheat Sheet](cheatsheets/sso-saml-scim.md): how SAML login works, validating assertions, SP- versus IdP-initiated login, domain verification, JIT versus SCIM provisioning, and the SCIM API.
 - [HTTP and TLS Cheat Sheet](cheatsheets/tls-docsign.md): HTTP and HTTPS, cryptographic keys, key agreement, CA certificates, TLS handshakes, and how electronic signatures sign and verify documents.
