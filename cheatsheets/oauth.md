@@ -21,27 +21,31 @@ sequenceDiagram
     participant G as Google OAuth server
     participant API as Google Calendar API
 
-    Note over T,G: Once - TimeFinder registers with Google<br/>and gets client_id, client secret, and callback URL
-    U->>T: Connect Google Calendar
-    T-->>U: Redirect to accounts.google.com<br/>client_id, scope calendar.readonly, state
-    U->>G: Authorization request
-    G->>U: Sign in to Google and consent screen
+    Note over T,G: Once - TimeFinder registers in the Google Cloud console<br/>and gets client_id, client secret, and a registered callback URL
+    U->>T: Click Connect Google Calendar
+    T-->>U: 302 Location: https://accounts.google.com/o/oauth2/v2/auth<br/>?client_id=1234.apps.googleusercontent.com<br/>&redirect_uri=https://timefinder.example/oauth/callback<br/>&response_type=code<br/>&scope=https://www.googleapis.com/auth/calendar.readonly<br/>&access_type=offline<br/>&state=af0ifjsldkj
+    U->>G: GET https://accounts.google.com/o/oauth2/v2/auth?client_id=...
+    G->>U: Sign in to Google, then consent screen<br/>TimeFinder wants to see your calendars
     U->>G: Allow
-    G-->>U: Redirect to TimeFinder callback<br/>with a short-lived code and state
-    U->>T: Callback with code and state
+    G-->>U: 302 Location: https://timefinder.example/oauth/callback<br/>?code=4/0AeanS0b...&state=af0ifjsldkj
+    U->>T: GET /oauth/callback?code=4/0AeanS0b...&state=af0ifjsldkj
     T->>T: Check state matches this browser session
-    T->>G: POST oauth2.googleapis.com/token<br/>code and client secret
-    G-->>T: Access token (about 1 hour) and refresh token
-    T->>API: GET events<br/>Authorization: Bearer access token
-    API-->>T: Your calendar events
+    T->>G: POST https://oauth2.googleapis.com/token<br/>grant_type=authorization_code<br/>&code=4/0AeanS0b...<br/>&redirect_uri=https://timefinder.example/oauth/callback<br/>&client_id=1234.apps.googleusercontent.com<br/>&client_secret=...
+    G-->>T: 200 OK<br/>access_token=ya29.a0Af..., expires_in=3599<br/>token_type=Bearer, refresh_token=1//0g...
+    T->>API: GET https://www.googleapis.com/calendar/v3/calendars/primary/events<br/>Authorization: Bearer ya29.a0Af...
+    API-->>T: 200 OK with your calendar events
     T-->>U: Show free slots
-    Note over T,G: Later - refresh token buys a new access token<br/>without asking you again
+    Note over T,G: About an hour later, the access token expires
+    T->>G: POST https://oauth2.googleapis.com/token<br/>grant_type=refresh_token&refresh_token=1//0g...<br/>&client_id=...&client_secret=...
+    G-->>T: 200 OK with a new access_token, no user involved
 ```
+
+`access_type=offline` asks Google for a refresh token. Without it, TimeFinder gets only the one-hour access token.
 
 - Your password goes only to Google. TimeFinder only ever holds tokens.
 - The token is limited to its **scope**, here read-only calendar access.
 - You can revoke the access at any time at `myaccount.google.com/permissions`.
-- "Sign in with Google" is the same flow with the `openid` scope. Google then also returns an ID token that says who you are (see [OIDC sign-in](#oidc-sign-in-with-authorization-code-and-pkce)).
+- "Sign in with Google" is the same flow with the `openid` scope. Google then also returns an ID token that says who you are (see [OIDC sign-in](#oidc-sign-in)).
 
 The authorization server and resource server are separate roles even when one provider operates both.
 A **scope** names a requested permission, such as `calendar.read`.
@@ -67,26 +71,54 @@ An API may validate a signed token locally or check an opaque token through the 
 
 ## Application-only access
 
-A backend job can also need API access without acting for a signed-in user.
-With the **client credentials** grant, a confidential client authenticates directly to the authorization server and receives a token for its assigned permissions.
+The app acts **as itself**, not for a user.
+No user signs in, and there is no browser, consent screen, or authorization code.
+With the **client credentials** grant, a confidential client authenticates directly to the authorization server and receives a token for its own assigned permissions.
+
+| | User-delegated access (the Google flow above) | Application-only access |
+| --- | --- | --- |
+| Acts as | A user, with their consent | The app itself |
+| User involved? | Yes: sign in and consent | No |
+| The token means | "TimeFinder, for Alice" | "The billing service" |
+| Can access | That user's data, within the scope | What the app itself was granted |
+| Refresh token? | Often | No. Request a new token instead. |
+
+Examples:
+
+- One microservice calls another, with tokens from Keycloak, Okta, or Auth0 (which calls this "machine-to-machine").
+- A nightly job pushes reports to an internal analytics API.
+- A backend calls Microsoft Graph with application permissions to read the company directory, approved once by an admin.
 
 ```mermaid
 sequenceDiagram
-    participant C as Backend job
+    participant C as Billing job
     participant A as Authorization server
-    participant R as Protected API
+    participant R as Invoicing API
 
-    C->>A: Token request with grant_type=client_credentials<br/>Authenticate the client
+    C->>A: POST https://auth.example.com/oauth/token<br/>grant_type=client_credentials<br/>&client_id=billing-job&client_secret=...<br/>&scope=invoices.write
     A->>A: Check client and permitted access
-    A-->>C: Access token
-    C->>R: API request with access token
+    A-->>C: 200 OK<br/>access_token=eyJhbGci..., expires_in=300
+    C->>R: POST https://invoices.example.com/invoices<br/>Authorization: Bearer eyJhbGci...
     R->>R: Validate token and authorize the request
-    R-->>C: Result
+    R-->>C: 201 Created
 ```
 
 This flow has no browser redirect or authorization code.
 PKCE protects code exchange, so it is not part of this grant.
-Request a new token through the same client-authentication flow when it expires.
+Cache the token in memory and request a new one through the same flow when it expires.
+
+### Not the same as storing user tokens
+
+A backend that saves users' refresh tokens in its database is **not** application-only access:
+
+1. Alice connects Google Calendar through the user flow, with `access_type=offline`.
+2. TimeFinder saves Alice's refresh token in its database, encrypted.
+3. At 3 AM a sync job loads it, gets a fresh access token, and reads Alice's calendar.
+
+The job runs without Alice present, but it still acts **as Alice**, with her consent, and it stops working if she revokes access.
+This is called offline access.
+
+Quick test: ask whose permission the token carries. A specific user's means user-delegated access, even when it runs from a database at 3 AM. Only the app's own means application-only access.
 
 ## Keep the credentials separate
 
@@ -114,36 +146,43 @@ For user authorization, use authorization code flow with [PKCE](#pkce-the-attack
 PKCE is also recommended for confidential clients, which still authenticate at the token endpoint using a secret or another configured method.
 Client authentication and PKCE protect different parts of the flow and can be used together.
 
-## OIDC sign-in with authorization code and PKCE
+## OIDC sign-in
 
-This example uses a confidential web backend and OIDC sign-in.
-The backend stores the verifier and correlation values against the initiating browser session.
+OAuth alone answers "may this app call this API?" It does not tell the app who the user is.
+OIDC, as in "Sign in with Google", is the same authorization code flow with two additions:
+
+1. The app asks for the `openid` scope, usually with `email profile`, and sends a random `nonce`.
+2. Google returns an **ID token** next to the access token. The ID token says who the user is, and it is meant for the app itself, not for an API.
+
+| | OAuth only | OIDC sign-in |
+| --- | --- | --- |
+| Question answered | "Can TimeFinder read this calendar?" | "Who is this user?" |
+| Scope | `https://www.googleapis.com/auth/calendar.readonly` | `openid email profile` |
+| The app receives | Access token | Access token **and ID token** |
 
 ```mermaid
 sequenceDiagram
-    participant B as Browser
-    participant C as Application backend
-    participant A as Authorization server
+    participant U as Your browser
+    participant T as TimeFinder backend
+    participant G as Google OAuth server
 
-    B->>C: Start sign-in
-    C->>C: Generate verifier, state, and nonce<br/>Store them for this browser transaction
-    C-->>B: Redirect with client_id, redirect_uri, openid scope<br/>challenge, S256, state, and nonce
-    B->>A: Authorization request
-    A->>A: Authenticate user and obtain required consent
-    A-->>B: Redirect to registered callback with code and state
-    B->>C: Callback with code and state
-    C->>C: Validate state against this browser session<br/>Load the stored verifier
-    C->>A: Exchange code with verifier and redirect_uri<br/>Authenticate the client
-    A->>A: Validate code, client, redirect, and verifier<br/>Consume code on successful exchange
-    A-->>C: Access token and ID token
-    C->>C: Validate ID token and expected nonce
-    C-->>B: Establish application session
+    U->>T: Click Sign in with Google
+    T->>T: Generate state and nonce<br/>Store them for this browser session
+    T-->>U: 302 Location: https://accounts.google.com/o/oauth2/v2/auth<br/>?client_id=1234.apps.googleusercontent.com<br/>&redirect_uri=https://timefinder.example/oauth/callback<br/>&response_type=code<br/>&scope=openid email profile<br/>&state=af0ifjsldkj&nonce=n-0S6_WzA2Mj
+    U->>G: GET https://accounts.google.com/o/oauth2/v2/auth?client_id=...
+    G->>U: Sign in to Google, then consent screen
+    U->>G: Allow
+    G-->>U: 302 Location: https://timefinder.example/oauth/callback<br/>?code=4/0AeanS0b...&state=af0ifjsldkj
+    U->>T: GET /oauth/callback?code=4/0AeanS0b...&state=af0ifjsldkj
+    T->>T: Check state matches this browser session
+    T->>G: POST https://oauth2.googleapis.com/token<br/>grant_type=authorization_code&code=4/0AeanS0b...<br/>&redirect_uri=...&client_id=...&client_secret=...
+    G-->>T: 200 OK<br/>access_token=ya29.a0Af..., id_token=eyJhbGci...
+    T->>T: Validate the ID token<br/>signature, iss, aud, exp, and nonce
+    T->>T: Find or create the user by sub
+    T-->>U: Set-Cookie: session=... (signed in)
 ```
 
-The browser carries the challenge and authorization code, but the backend keeps its client secret and verifier out of the redirect URLs.
-For a public client, the client itself retains the verifier and performs the exchange without a client secret.
-
-With Google, the ID token's claims look like this. Use `sub`, not `email`, as the stable user ID, because an email address can change.
+The ID token is a signed JWT. Decoded, Google's claims look like this:
 
 ```json
 {
@@ -151,20 +190,33 @@ With Google, the ID token's claims look like this. Use `sub`, not `email`, as th
   "aud": "1234.apps.googleusercontent.com",
   "sub": "110169484474386276334",
   "email": "you@gmail.com",
-  "nonce": "n-0S6_WzA2Mj"
+  "nonce": "n-0S6_WzA2Mj",
+  "exp": 1793865600
 }
 ```
+
+Before signing the user in, validate the ID token:
+
+| Check | Why |
+| --- | --- |
+| Signature, with Google's published keys | The token really came from Google and was not changed. |
+| `iss` | It was issued by the expected provider. |
+| `aud` equals your `client_id` | It was issued to your app, not to another app. |
+| `exp` | It has not expired. |
+| `nonce` equals the value you stored | It belongs to this sign-in attempt and is not replayed. |
+
+- Use `sub`, not `email`, as the stable user ID, because an email address can change.
+- After sign-in, the app uses its own session, usually a cookie. The ID token is not sent to APIs.
+- An access token or authorization code is not proof of identity. Only a validated ID token is.
+- OIDC does not require PKCE, and PKCE does not require OIDC. PKCE protects the code exchange in any authorization code flow, so it can be added here too (see [PKCE](#pkce-the-attack-it-stops)).
 
 ## Bind the result to the initiating session
 
 | Mechanism | What to check |
 | --- | --- |
 | `state` | Match the callback to a pending authorization transaction bound to the initiating browser session. This helps prevent cross-site request forgery. |
-| PKCE | Present the verifier saved for that transaction so the authorization server can validate the code exchange. |
 | OIDC `nonce` | If sent, require the same value in the validated ID token to associate it with the sign-in attempt. |
-
-For OIDC, validate the ID token's signature with trusted provider keys, issuer, audience, expiry, and expected nonce before establishing the application session.
-An arbitrary access token or authorization code is not sufficient proof of identity for the application's login session.
+| [PKCE](#pkce-the-attack-it-stops) | If used, present the verifier saved for that transaction so the authorization server can validate the code exchange. |
 
 Protect tokens and application sessions separately, use HTTPS for web redirects and token exchanges, and validate registered redirect URIs.
 Multi-factor authentication strengthens user authentication; it does not replace PKCE or session binding.
