@@ -161,12 +161,12 @@ sequenceDiagram
     participant G as Google OAuth server
 
     U->>T: Connect Google Calendar
-    T->>G: Authorization request with client_id
+    T->>G: Open in the browser: https://accounts.google.com/o/oauth2/v2/auth<br/>?client_id=1234.apps.googleusercontent.com<br/>&redirect_uri=timefinder://callback<br/>&response_type=code<br/>&scope=https://www.googleapis.com/auth/calendar.readonly<br/>&state=af0ifjsldkj
     G->>U: Sign in and consent
     U->>G: Allow
-    G-->>M: Redirect to timefinder://callback with code<br/>The malicious app catches it
-    M->>G: Exchange code with TimeFinder's public client_id
-    G-->>M: Access token for your calendar
+    G-->>M: Redirect to timefinder://callback?code=4/0AeanS0b...&state=af0ifjsldkj<br/>The malicious app catches it
+    M->>G: POST https://oauth2.googleapis.com/token<br/>grant_type=authorization_code&code=4/0AeanS0b...<br/>&redirect_uri=timefinder://callback<br/>&client_id=1234.apps.googleusercontent.com
+    G-->>M: 200 OK<br/>access_token=ya29.a0Af... for your calendar
     Note over M,G: No secret is needed, so the code alone is enough
 ```
 
@@ -183,17 +183,17 @@ sequenceDiagram
     participant M as Malicious app on the same phone
     participant G as Google OAuth server
 
-    T->>T: Make random code_verifier and keep it in memory<br/>code_challenge = SHA-256 of the verifier
-    T->>G: Authorization request with code_challenge
+    T->>T: Make random code_verifier and keep it in memory<br/>dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk<br/>code_challenge = BASE64URL(SHA-256(verifier))
+    T->>G: Open in the browser: https://accounts.google.com/o/oauth2/v2/auth<br/>?client_id=1234.apps.googleusercontent.com<br/>&redirect_uri=timefinder://callback<br/>&response_type=code<br/>&scope=https://www.googleapis.com/auth/calendar.readonly<br/>&state=af0ifjsldkj<br/>&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM<br/>&code_challenge_method=S256
     G->>G: Store the challenge with the code
-    G-->>M: Redirect with code<br/>Intercepted again
-    M->>G: Exchange code without the verifier
+    G-->>M: Redirect to timefinder://callback?code=4/0AeanS0b...&state=af0ifjsldkj<br/>Intercepted again
+    M->>G: POST https://oauth2.googleapis.com/token<br/>grant_type=authorization_code&code=4/0AeanS0b...<br/>&redirect_uri=timefinder://callback<br/>&client_id=1234.apps.googleusercontent.com<br/>(no code_verifier)
     G->>G: Nothing matches the stored challenge
-    G-->>M: Rejected (invalid_grant)
-    Note over T,G: Only the real app has the verifier
-    T->>G: Exchange code with code_verifier
-    G->>G: SHA-256 of the verifier matches the challenge
-    G-->>T: Access token
+    G-->>M: 400 Bad Request<br/>error=invalid_grant
+    Note over T,G: On a normal run, the code reaches the real app,<br/>which is the only one holding the verifier
+    T->>G: POST https://oauth2.googleapis.com/token<br/>grant_type=authorization_code&code=4/0AeanS0b...<br/>&redirect_uri=timefinder://callback<br/>&client_id=1234.apps.googleusercontent.com<br/>&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
+    G->>G: BASE64URL(SHA-256(code_verifier)) matches the stored challenge
+    G-->>T: 200 OK<br/>access_token=ya29.a0Af...
 ```
 
 - The challenge passes through the browser and redirects, but the verifier never does.
