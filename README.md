@@ -31,6 +31,6 @@ These are study notes. The book and its PDF are not included.
 - [DynamoDB Cheat Sheet](cheatsheets/dynamodb.md): keys, indexes, single-table design, capacity, Global Tables, DAX, and DynamoDB Streams versus Kinesis.
 - [gRPC and HTTP/2 Cheat Sheet](cheatsheets/grpc.md): Protobuf, multiplexing, channels, deadlines, retries, keepalive, and observability.
 - [Service Boundaries and Testing Cheat Sheet](cheatsheets/testing.md): domain ownership, ports and adapters, test boundaries, and gradual module extraction.
-- [OAuth Cheat Sheet](cheatsheets/oauth.md): how OAuth works end to end with Google as the example, then roles and flows, access tokens, PKCE, OIDC, and session binding.
+- [OAuth Cheat Sheet](cheatsheets/oauth.md): how OAuth works with Google as the example, tokens and client types, OIDC sign-in, session binding, and the code-interception attack PKCE stops.
 - [JWT and Distributed Sessions Cheat Sheet](cheatsheets/distributed-sessions.md): authorization claims, session storage, token validation, caching, and revocation.
 - [HTTP and TLS Cheat Sheet](cheatsheets/tls-docsign.md): HTTP and HTTPS, cryptographic keys, key agreement, CA certificates, TLS handshakes, and how electronic signatures sign and verify documents.

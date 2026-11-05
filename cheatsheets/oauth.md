@@ -3,91 +3,16 @@
 OAuth 2.0 lets an application obtain permission to access an API.
 OpenID Connect, or OIDC, adds an identity layer for sign-in.
 
-## How OAuth works, in general
+## How OAuth works
 
-Think of a hotel key card.
-The front desk checks who you are once and gives you a card.
-The card opens only your room, and only until checkout.
-The doors never see your passport. They only check the card.
+Example: a scheduling app, TimeFinder, wants to read your Google Calendar without asking for your Google password.
 
-In OAuth, the front desk is the **authorization server**, the card is the **access token**, the rooms it opens are its **scopes**, and the doors are the **API**.
-
-### Example: an app reads your Google Calendar
-
-A scheduling app called TimeFinder wants to read your Google Calendar to find free slots.
-It must not ask for your Google password.
-
-| Role | In this example |
-| --- | --- |
-| Resource owner | You, with your Google account. |
-| Client | TimeFinder's backend. |
-| Authorization server | Google's OAuth server: `accounts.google.com` for sign-in and consent, `oauth2.googleapis.com` for tokens. |
-| Resource server | The Google Calendar API at `www.googleapis.com/calendar/v3`. |
-
-**Once, before any user:** TimeFinder registers in the Google Cloud console.
-It gets a `client_id` and a client secret, and it registers its callback URL, `https://timefinder.example/oauth/callback`.
-Google will only send codes to registered callback URLs.
-
-**Each time a user connects:**
-
-1. You click **Connect Google Calendar** in TimeFinder.
-2. TimeFinder redirects your browser to Google, saying who it is and what it wants:
-
-   ```text
-   https://accounts.google.com/o/oauth2/v2/auth
-     ?client_id=1234.apps.googleusercontent.com
-     &redirect_uri=https://timefinder.example/oauth/callback
-     &response_type=code
-     &scope=https://www.googleapis.com/auth/calendar.readonly
-     &access_type=offline
-     &state=af0ifjsldkj
-     &code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM
-     &code_challenge_method=S256
-   ```
-
-3. Google signs you in, if you are not signed in already. Your password goes only to Google.
-4. Google shows a consent screen: "TimeFinder wants to see your calendars." You click **Allow**.
-5. Google redirects your browser back to TimeFinder with a short-lived **authorization code**:
-
-   ```text
-   https://timefinder.example/oauth/callback?code=4/0AeanS0b...&state=af0ifjsldkj
-   ```
-
-6. TimeFinder's backend checks that `state` matches what it sent, then exchanges the code for tokens, server to server:
-
-   ```http
-   POST /token HTTP/1.1
-   Host: oauth2.googleapis.com
-   Content-Type: application/x-www-form-urlencoded
-
-   grant_type=authorization_code&code=4/0AeanS0b...
-   &redirect_uri=https://timefinder.example/oauth/callback
-   &client_id=1234.apps.googleusercontent.com&client_secret=<secret>
-   &code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
-   ```
-
-7. Google replies with tokens:
-
-   ```json
-   {
-     "access_token": "ya29.a0Af...",
-     "expires_in": 3599,
-     "token_type": "Bearer",
-     "scope": "https://www.googleapis.com/auth/calendar.readonly",
-     "refresh_token": "1//0g..."
-   }
-   ```
-
-8. TimeFinder calls the Calendar API with the access token:
-
-   ```http
-   GET /calendar/v3/calendars/primary/events HTTP/1.1
-   Host: www.googleapis.com
-   Authorization: Bearer ya29.a0Af...
-   ```
-
-9. After about an hour the access token expires.
-   TimeFinder sends the refresh token to `oauth2.googleapis.com/token` with `grant_type=refresh_token` and gets a new access token, without bothering you.
+| Role | Responsibility | In this example |
+| --- | --- | --- |
+| Resource owner | Can authorize access to the protected resources. | You, with your Google account. |
+| Client | Requests access and uses the resulting token. | TimeFinder's backend. |
+| Authorization server | Checks authorization requests and issues tokens. | Google: `accounts.google.com` and `oauth2.googleapis.com`. |
+| Resource server | Hosts the protected API and enforces access rules. | Google Calendar API. |
 
 ```mermaid
 sequenceDiagram
@@ -96,109 +21,31 @@ sequenceDiagram
     participant G as Google OAuth server
     participant API as Google Calendar API
 
+    Note over T,G: Once - TimeFinder registers with Google<br/>and gets client_id, client secret, and callback URL
     U->>T: Connect Google Calendar
     T-->>U: Redirect to accounts.google.com<br/>client_id, scope calendar.readonly, state
     U->>G: Authorization request
-    G->>U: Sign in and consent screen
+    G->>U: Sign in to Google and consent screen
     U->>G: Allow
-    G-->>U: Redirect to TimeFinder callback with code and state
+    G-->>U: Redirect to TimeFinder callback<br/>with a short-lived code and state
     U->>T: Callback with code and state
-    T->>G: POST oauth2.googleapis.com/token<br/>code, client secret, code_verifier
-    G-->>T: Access token, refresh token
-    T->>API: GET events with Bearer access token
+    T->>T: Check state matches this browser session
+    T->>G: POST oauth2.googleapis.com/token<br/>code and client secret
+    G-->>T: Access token (about 1 hour) and refresh token
+    T->>API: GET events<br/>Authorization: Bearer access token
     API-->>T: Your calendar events
     T-->>U: Show free slots
-    Note over T,G: About an hour later, refresh token buys a new access token
+    Note over T,G: Later - refresh token buys a new access token<br/>without asking you again
 ```
 
-What each side ends up knowing:
-
-| Party | Knows your Google password? | Holds |
-| --- | --- | --- |
-| Google | Yes | Your account and the permission you granted. |
-| TimeFinder | No | An access token for read-only calendar access, and a refresh token. |
-| Calendar API | No | Only the token in each request, which it checks. |
-
-You can take the permission back at any time at `myaccount.google.com/permissions`.
-Google then revokes TimeFinder's refresh token, so it can no longer get new access tokens.
-
-`access_type=offline` asks Google for a refresh token.
-Without it, TimeFinder gets only the one-hour access token and must send you through consent again.
-Google returns a refresh token only on the first consent, unless the request adds `prompt=consent`.
-
-### OAuth vs "Sign in with Google"
-
-OAuth alone answers **"may this app call this API?"** It does not tell the app who you are.
-"Sign in with Google" is **OIDC** on top of the same flow:
-
-| | OAuth only | OIDC sign-in |
-| --- | --- | --- |
-| Scope | `https://www.googleapis.com/auth/calendar.readonly` | `openid email profile` |
-| Token for the app | Access token | Access token **and an ID token** |
-| Question answered | "Can TimeFinder read this calendar?" | "Who is this user?" |
-
-The ID token is a signed JWT that the app validates itself. Example claims:
-
-```json
-{
-  "iss": "https://accounts.google.com",
-  "aud": "1234.apps.googleusercontent.com",
-  "sub": "110169484474386276334",
-  "email": "you@gmail.com",
-  "nonce": "n-0S6_WzA2Mj",
-  "exp": 1793865600
-}
-```
-
-Use `sub`, not `email`, as the stable user ID. An email address can change.
-
-The rest of this sheet explains each piece in detail: the roles, tokens, client types, PKCE, and how to bind the result to the browser session.
-
-## The roles
-
-Suppose a scheduling application wants to read your calendar without asking for your calendar password.
-
-| Role | Responsibility | Example |
-| --- | --- | --- |
-| Resource owner | Can authorize access to the protected resources. | You, as the calendar owner. |
-| Client | Requests access and uses the resulting token. | The scheduling application. |
-| Authorization server | Checks authorization requests and issues tokens. | The calendar provider's authorization service. |
-| Resource server | Hosts the protected API and enforces access rules. | The calendar API. |
+- Your password goes only to Google. TimeFinder only ever holds tokens.
+- The token is limited to its **scope**, here read-only calendar access.
+- You can revoke the access at any time at `myaccount.google.com/permissions`.
+- "Sign in with Google" is the same flow with the `openid` scope. Google then also returns an ID token that says who you are (see [OIDC sign-in](#oidc-sign-in-with-authorization-code-and-pkce)).
 
 The authorization server and resource server are separate roles even when one provider operates both.
 A **scope** names a requested permission, such as `calendar.read`.
 The provider defines its meaning, and the permissions actually granted can differ from those requested.
-
-## User-authorized access
-
-The authorization-code flow lets the user authenticate with the provider and authorize the client.
-The client receives a temporary code, exchanges it for an access token, and presents that token to the API.
-The user's provider password stays with the provider.
-
-This overview uses a web backend as the client and includes PKCE, whose details are explained below.
-
-```mermaid
-sequenceDiagram
-    participant U as User browser
-    participant C as Scheduling app backend
-    participant A as Authorization server
-    participant R as Calendar API
-
-    U->>C: Connect my calendar
-    C->>C: Prepare authorization request and PKCE values
-    C-->>U: Redirect to provider for calendar.read permission
-    U->>A: Authorization request
-    A->>A: Authenticate user and obtain required approval
-    A-->>U: Redirect to app callback with code and state
-    U->>C: Callback with code and state
-    C->>C: Validate callback against the initiating session
-    C->>A: Exchange code with verifier<br/>Authenticate client as required
-    A-->>C: Access token with granted permissions
-    C->>R: Read events using the access token
-    R->>R: Validate token and authorize the requested access
-    R-->>C: Calendar events
-    C-->>U: Show scheduling results
-```
 
 ### Using the access token
 
@@ -263,38 +110,9 @@ When a refresh token is issued, the client can request a replacement access toke
 | Public | No. A secret embedded in distributed client code can be extracted. | A browser application or native app. |
 | Confidential | Yes, within its protected server environment. | A web backend performing the token exchange. |
 
-For user authorization, use authorization code flow with PKCE for public clients.
+For user authorization, use authorization code flow with [PKCE](#pkce-the-attack-it-stops) for public clients.
 PKCE is also recommended for confidential clients, which still authenticate at the token endpoint using a secret or another configured method.
 Client authentication and PKCE protect different parts of the flow and can be used together.
-
-## How PKCE works
-
-PKCE means **Proof Key for Code Exchange**.
-The client generates a new random `code_verifier` for each authorization attempt and derives a `code_challenge` from it.
-With the `S256` method:
-
-```text
-code_challenge = BASE64URL(SHA256(ASCII(code_verifier)))
-```
-
-Base64url encoding omits trailing `=` padding.
-The verifier must contain 43–128 permitted URL-safe characters and enough randomness to resist guessing.
-For example, 32 random bytes encoded as base64url produce a 43-character verifier:
-
-```python
-import base64
-import hashlib
-import secrets
-
-
-code_verifier = secrets.token_urlsafe(32)
-digest = hashlib.sha256(code_verifier.encode('ascii')).digest()
-code_challenge = base64.urlsafe_b64encode(digest).rstrip(b'=').decode('ascii')
-```
-
-Send the challenge with the authorization request using `code_challenge_method=S256`.
-Keep the verifier with the client's pending transaction, then send it to the token endpoint during the code exchange.
-The authorization server hashes the supplied verifier and checks it against the challenge associated with that code.
 
 ## OIDC sign-in with authorization code and PKCE
 
@@ -325,23 +143,17 @@ sequenceDiagram
 The browser carries the challenge and authorization code, but the backend keeps its client secret and verifier out of the redirect URLs.
 For a public client, the client itself retains the verifier and performs the exchange without a client secret.
 
-## Why an intercepted code is insufficient
+With Google, the ID token's claims look like this. Use `sub`, not `email`, as the stable user ID, because an email address can change.
 
-Knowing the code and challenge does not reveal the random verifier.
-The token endpoint rejects an exchange without the matching verifier.
-
-```mermaid
-sequenceDiagram
-    participant X as Holder of an intercepted code
-    participant A as Authorization server
-
-    X->>A: Exchange code with a missing or incorrect verifier
-    A->>A: Verifier check fails for the stored challenge
-    A-->>X: Reject token request
+```json
+{
+  "iss": "https://accounts.google.com",
+  "aud": "1234.apps.googleusercontent.com",
+  "sub": "110169484474386276334",
+  "email": "you@gmail.com",
+  "nonce": "n-0S6_WzA2Mj"
+}
 ```
-
-A client secret alone does not bind a code to a particular browser's authorization attempt.
-If a code is injected into another browser's flow, correct transaction binding makes the client use that flow's verifier, which will not match the injected code's challenge.
 
 ## Bind the result to the initiating session
 
@@ -354,6 +166,87 @@ If a code is injected into another browser's flow, correct transaction binding m
 For OIDC, validate the ID token's signature with trusted provider keys, issuer, audience, expiry, and expected nonce before establishing the application session.
 An arbitrary access token or authorization code is not sufficient proof of identity for the application's login session.
 
-PKCE protects the code exchange.
 Protect tokens and application sessions separately, use HTTPS for web redirects and token exchanges, and validate registered redirect URIs.
 Multi-factor authentication strengthens user authentication; it does not replace PKCE or session binding.
+
+## PKCE: the attack it stops
+
+PKCE means **Proof Key for Code Exchange**.
+It makes a stolen authorization code useless.
+
+### The attack, without PKCE
+
+TimeFinder also has a phone app. A phone app is a public client: it has no client secret, because anyone can extract one from the app.
+Google sends the code back to `timefinder://callback`.
+A malicious app on the same phone registers the same `timefinder://` scheme and receives the code instead.
+
+```mermaid
+sequenceDiagram
+    participant U as You
+    participant T as TimeFinder phone app
+    participant M as Malicious app on the same phone
+    participant G as Google OAuth server
+
+    U->>T: Connect Google Calendar
+    T->>G: Authorization request with client_id
+    G->>U: Sign in and consent
+    U->>G: Allow
+    G-->>M: Redirect to timefinder://callback with code<br/>The malicious app catches it
+    M->>G: Exchange code with TimeFinder's public client_id
+    G-->>M: Access token for your calendar
+    Note over M,G: No secret is needed, so the code alone is enough
+```
+
+### The same attack, with PKCE
+
+Before each sign-in, the real app makes a random secret, the `code_verifier`, and keeps it in memory.
+It sends only its hash, the `code_challenge`, to Google.
+Google stores the challenge with the code.
+To exchange the code, the caller must show the verifier that matches.
+
+```mermaid
+sequenceDiagram
+    participant T as TimeFinder phone app
+    participant M as Malicious app on the same phone
+    participant G as Google OAuth server
+
+    T->>T: Make random code_verifier and keep it in memory<br/>code_challenge = SHA-256 of the verifier
+    T->>G: Authorization request with code_challenge
+    G->>G: Store the challenge with the code
+    G-->>M: Redirect with code<br/>Intercepted again
+    M->>G: Exchange code without the verifier
+    G->>G: Nothing matches the stored challenge
+    G-->>M: Rejected (invalid_grant)
+    Note over T,G: Only the real app has the verifier
+    T->>G: Exchange code with code_verifier
+    G->>G: SHA-256 of the verifier matches the challenge
+    G-->>T: Access token
+```
+
+- The challenge passes through the browser and redirects, but the verifier never does.
+- A hash cannot be reversed, so seeing the challenge does not reveal the verifier.
+- Web backends benefit too. If an attacker injects a stolen code into another user's sign-in, the backend sends that session's verifier, which does not match the injected code's challenge.
+- A client secret alone does not help here: it proves which app is calling, not which sign-in attempt the code belongs to.
+
+### How the values are made
+
+With the `S256` method:
+
+```text
+code_challenge = BASE64URL(SHA256(ASCII(code_verifier)))
+```
+
+- Make a new verifier for every authorization attempt: 43–128 URL-safe characters with enough randomness to resist guessing.
+- Base64url encoding omits trailing `=` padding.
+- Send the challenge with `code_challenge_method=S256`, and the verifier at the token endpoint.
+
+```python
+import base64
+import hashlib
+import secrets
+
+
+code_verifier = secrets.token_urlsafe(32)  # 32 random bytes -> 43 characters
+digest = hashlib.sha256(code_verifier.encode('ascii')).digest()
+code_challenge = base64.urlsafe_b64encode(digest).rstrip(b'=').decode('ascii')
+```
