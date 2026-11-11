@@ -2,6 +2,12 @@
 
 A companion to [DDIA Chapter 11: Stream Processing](../ddia/11-stream-processing.md) and [Chapter 12: The Future of Data Systems](../ddia/12-the-future-of-data-systems.md). Kafka settings below refer to the Java clients documented in Kafka 4.3.
 
+The sheet has three parts:
+
+- **Basics:** [brokers, topics, partitions, and consumer groups](#kafka-fundamentals-brokers-topics-partitions-and-consumer-groups).
+- **Guarantees:** [what at most once, at least once, and exactly once mean](#delivery-guarantees-at-most-once-at-least-once-exactly-once), then one section for each of the four mechanisms, then [which mechanism to use and where its guarantee stops](#putting-it-together-which-mechanism-and-where-it-stops).
+- **Bad records:** [poison pills and dead-letter queues](#poison-pills-and-dead-letter-queues).
+
 ## Kafka fundamentals: brokers, topics, partitions, and consumer groups
 
 **Producers write events to topics. Kafka stores those events in partitions on brokers. Consumers fetch the events, and consumer groups decide which consumer reads each partition.**
@@ -107,36 +113,21 @@ Reading or committing an offset does not delete the record. Topic policies contr
 
 Cleanup works one whole segment file at a time (`segment.bytes`, 1 GiB by default), so a record can stay past its limit until its segment is closed and removed.
 
-## Poison pills and dead-letter queues
+## Delivery guarantees: at most once, at least once, exactly once
 
-A **poison pill** is a record that repeatedly fails processing, such as malformed data or an unsupported schema.
-Retrying it indefinitely can stall its partition.
-A **dead-letter queue**, or **DLQ**, is an ordinary topic such as `orders.dlq` that preserves failed records for investigation and replay while other work continues.
-Kafka does not automatically create one for each topic; the consumer application decides when and where to publish failures.
+A consumer does two things with each record: it processes the record, and it saves its offset. The order of the two decides what a crash in between does:
 
-```mermaid
-flowchart LR
-    A["Process record"] --> B{"Succeeded?"}
-    B -->|Yes| C["Commit next offset"]
-    B -->|No| D{"Retryable and retries left?"}
-    D -->|Yes| E["Wait with backoff"]
-    E --> A
-    D -->|No| F["Publish to DLQ"]
-    F -->|Write acknowledged| C
-    F -->|Write failed| G["Do not advance committed offset<br/>Retry or alert"]
-```
+| The consumer's order | A crash in between | Name |
+| --- | --- | --- |
+| Save the offset, then process | The record is skipped, so its effect is lost. | **At most once** |
+| Process, then save the offset | The record is processed again, so its effect can happen twice. | **At least once** |
+| Both take effect together, or a repeat is detected and skipped | The record takes effect once. | **Exactly once** |
 
-- Preserve the original key/value, source topic, partition, offset, and error details in the DLQ record.
-  For decoding failures, consuming raw bytes and decoding in the handler lets you capture the malformed record.
-- Disable auto-commit and never commit past unfinished earlier records in the partition.
-  Auto-commit is on by default and saves positions on a timer, so with asynchronous handling it can save a position past records still in progress, and a crash then skips them.
-  Publishing to a DLQ copies the record; it does not delete the original.
-- A crash between the DLQ write and offset commit can produce duplicate DLQ entries.
-  A [Kafka transaction](#2-kafka-transactions-consume-transform-produce) can commit both together, with DLQ consumers using `read_committed`.
-- Monitor the DLQ, fix the cause, and replay deliberately with duplicate handling.
-  Replay can change business-event order; if later events must wait, pause the affected partition instead of skipping ahead and keep polling to remain in the group.
+A producer has the same problem when a send gets no acknowledgment, because it cannot tell whether the record was stored. Giving up can lose the record, and sending again can store it twice, unless the broker recognizes the retry, as in [section 1](#1-idempotent-producer-a-retried-send-is-stored-once).
 
-## Exactly-once delivery vs. exactly-once processing
+By default, Kafka gives at-least-once delivery, so replays are expected and duplicates are the usual problem.
+
+### Exactly-once delivery vs. exactly-once processing
 
 Delivery describes a message reaching a destination. Processing describes what happens because of that message. Always name the destination or effects covered by the guarantee.
 
@@ -151,30 +142,9 @@ For example, an order event can be **stored once in Kafka, read twice by a consu
 
 Kafka Streams provides exactly-once processing for its Kafka output and managed state with `processing.guarantee=exactly_once_v2`. The default is `at_least_once`. With exactly-once on, each read-process-write step commits its input offsets, state store updates, and output records together, even if a client or broker fails midway. External database writes and API calls need their own coordination.
 
-## Know the guarantee's boundary
+Sections 1 to 4 each close one gap where a record could be lost or doubled. [Putting it together](#putting-it-together-which-mechanism-and-where-it-stops) then shows when to use each one and where its guarantee stops.
 
-| Mechanism | What it protects | What it does not automatically protect |
-| --- | --- | --- |
-| Idempotent producer | Automatic producer retries do not append duplicate records. | A new application-level `send()` of the same business event. |
-| Kafka transaction | Kafka output records and consumed offsets commit together within one cluster. | An external database update or HTTP request. |
-| Database transaction with deduplication | One committed database effect per logical event and handler. | Effects outside that database transaction. |
-
-## Keep the identities separate
-
-| Identity | Assigned by | Purpose |
-| --- | --- | --- |
-| Producer ID, or PID | Kafka | Identifies a producer at the protocol level. |
-| Producer epoch | Kafka | Identifies a generation of that producer identity and helps reject stale writers. |
-| Sequence number | Producer client | Orders a producer's records within a partition and identifies retried batches. |
-| Offset | Kafka partition | Identifies a record's position in that partition's log. |
-| `transactional.id` | Application configuration | Names a logical transactional producer across restarts. |
-| `group.id` | Consumer configuration | Names the consumer group whose progress is being tracked. |
-| Record key | Application | Commonly routes related records to a partition. It is not a deduplication key. |
-| Business `event_id` | Application | Identifies the same logical event across application retries and republication. |
-
-Record batches carry `producerId`, `producerEpoch`, and `baseSequence`. The broker uses producer identity and sequence ranges within a partition to recognize retries. For each producer, it remembers the last sequence number written to the partition and compares an incoming batch's first and last sequence numbers against it. A producer sequence number and a Kafka offset are different counters.
-
-## 1. Idempotent producer: acknowledgment lost, write retried
+## 1. Idempotent producer: a retried send is stored once
 
 The application calls `send()` once. The producer client retries the same batch when its acknowledgment is lost.
 
@@ -198,6 +168,14 @@ sequenceDiagram
     Note over A,K: One event stored despite two network attempts
 ```
 
+The broker recognizes the retry by three numbers that every record batch carries, as `producerId`, `producerEpoch`, and `baseSequence`:
+
+- **Producer ID (PID):** Kafka assigns it. It says which producer sent the batch.
+- **Producer epoch:** Kafka assigns it too. It is that producer's generation number, which lets brokers reject a stale writer.
+- **Sequence number:** the producer client counts its records in each partition.
+
+For each producer, the broker remembers the last sequence number written to the partition and compares an incoming batch's first and last sequence numbers against it. A batch it has already written is a retry, so it skips the append. A sequence number is not an offset: above, sequence 12 is stored at offset 42.
+
 Calling `send()` twice creates two records, even if the key and payload match. A new producer session can also publish the same business event again. Bare producer idempotency covers protocol retries within its session; it cannot deduplicate a resend by the application. If a `send()` still fails after the producer stops retrying, for example because the record expired in the buffer, the safe recovery is to close the producer and check the last produced records for duplicates.
 
 ```properties
@@ -208,9 +186,61 @@ max.in.flight.requests.per.connection=5
 
 Idempotency requires `acks=all`, retries greater than zero, and at most five in-flight requests per connection. These are also the defaults: `acks=all`, `retries=2147483647`, and five in-flight requests. The limit is five because the broker keeps at most five batches per producer for this check. With idempotency on, retries also do not reorder records. Leave `retries` at its supported default unless there is a reason to change it; `delivery.timeout.ms` (2 minutes by default) bounds how long a send keeps retrying. Explicitly enabling idempotency makes incompatible settings fail configuration validation with a `ConfigException`. If idempotency is only on by default, incompatible settings silently turn it off instead.
 
-## 2. Kafka transactions: consume, transform, produce
+## 2. Kafka transaction: several Kafka writes, all or nothing
 
-Without a transaction, a worker can publish output and then crash before committing its input offset. Recovery reads the input again and publishes another output record. Each attempt makes a new send, so producer retry deduplication does not solve this.
+A Kafka transaction makes a group of writes visible all together or not at all. It gives three things:
+
+| What it gives | Who needs it | Covered in |
+| --- | --- | --- |
+| Several records across partitions and topics appear together | Any producer that writes related records, even one that consumes nothing | [Several records at once](#several-records-at-once) |
+| Only one live writer per `transactional.id` | Any transactional producer that can be restarted or replaced | [What `transactional.id` adds](#what-transactionalid-adds) |
+| Output records and consumed offsets commit together | A worker that reads Kafka and writes Kafka | [Consume, transform, produce](#consume-transform-produce) |
+
+The third is a special case of the first. `sendOffsetsToTransaction()` writes the consumer's offsets to Kafka's internal `__consumer_offsets` topic, inside the same transaction as the output.
+
+On commit or abort, Kafka writes a marker record into each partition the transaction wrote to, and `read_committed` consumers use these markers to skip aborted records. A crash can leave a transaction pending until recovery or timeout resolves it. A restarted producer with the same `transactional.id` completes or aborts it, or the coordinator aborts it after `transaction.timeout.ms` (60000 ms, 1 minute, by default).
+
+### Several records at once
+
+The simplest use needs no consumer: a producer writes related records that must appear together. For example, an order gateway with no database of its own publishes to two topics:
+
+```java
+producer.initTransactions();      // once, at startup
+producer.beginTransaction();
+producer.send(new ProducerRecord<>("orders", "o-1", orderCreated));
+producer.send(new ProducerRecord<>("payments", "o-1", paymentRequested));
+producer.commitTransaction();     // read_committed readers see both, or neither
+```
+
+| The producer crashes after the first `send()` | What readers see |
+| --- | --- |
+| Without a transaction | `OrderCreated` without `PaymentRequested`, so the payment service never charges. A retry publishes `OrderCreated` a second time. |
+| With a transaction | `read_committed` readers see neither record, because the open transaction is aborted. A retry publishes both, once. |
+
+A batch job works the same way: if it crashes halfway through 10,000 records in one transaction, `read_committed` readers see none of them.
+
+### What `transactional.id` adds
+
+Use a stable logical writer name, such as `inventory-transformer-0`, and reuse it when replacing that writer. Give separate concurrent logical writers distinct IDs.
+
+Initializing a replacement producer resolves the previous producer's transaction and fences the old instance. If the old process wakes up, it cannot continue writing with stale authority. Producer epochs support this fencing. The `transactional.id` names the writer across many transactions; it is not a business event ID.
+
+Setting `transactional.id` enables transactional operation and implies producer idempotency. It does not deduplicate two independent committed transactions that contain the same business event. Its default is `null`, which allows only idempotent delivery. Call `initTransactions()` once before any other transactional method. A fenced old instance gets `ProducerFencedException`, which is fatal: its only option is to close. By default, transactions need a cluster of at least three brokers, set by the broker setting `transaction.state.log.replication.factor`.
+
+An epoch can change without a process restart. The newer transaction protocol used by compatible Kafka 4.0+ clients and brokers advances it for each transaction, so a duplicate from one transaction cannot be written as part of the next. The `transaction.version` cluster feature controls it. Servers enable it automatically since Kafka 4.0, and an existing cluster can turn it on with `transaction.version=2`. A producer switches only at the start of its next transaction, never midway.
+
+### What `read_committed` adds
+
+| Consumer setting | Records returned |
+| --- | --- |
+| `isolation.level=read_uncommitted` | Includes records from open and aborted transactions. |
+| `isolation.level=read_committed` | Returns committed transactional records and ordinary nontransactional records, subject to the partition's stable-offset boundary. |
+
+The default is `read_uncommitted`. A `read_committed` consumer reads only up to the **last stable offset**, the position just before the first still-open transaction. Records always come back in offset order, so an open transaction can hold back later records in its partition until the outcome is known. `read_committed` filters transaction visibility; it does not prevent replay or make a database update idempotent.
+
+### Consume, transform, produce
+
+Without a transaction, a worker can publish output and then crash before committing its input offset. Recovery reads the input again and publishes another output record. Each attempt makes a new send, so producer retry deduplication does not solve this. Committing the offset first fails the other way: a crash before the publish skips the input, so its output is lost.
 
 The solution is to commit the output and input progress in the same Kafka transaction. In this single-record example, input offset `42` is followed by next offset `43`.
 
@@ -245,26 +275,7 @@ sequenceDiagram
     end
 ```
 
-The cluster lifeline groups the relevant brokers and coordinators. The diagram shows the application-level guarantee, not each internal protocol request. On commit or abort, Kafka writes a marker record into each partition the transaction wrote to, and `read_committed` consumers use these markers to skip aborted records. A crash can leave a transaction pending until recovery or timeout resolves it. A restarted producer with the same `transactional.id` completes or aborts it, or the coordinator aborts it after `transaction.timeout.ms` (60000 ms, 1 minute, by default).
-
-### What `transactional.id` adds
-
-Use a stable logical writer name, such as `inventory-transformer-0`, and reuse it when replacing that writer. Give separate concurrent logical writers distinct IDs.
-
-Initializing a replacement producer resolves the previous producer's transaction and fences the old instance. If the old process wakes up, it cannot continue writing with stale authority. Producer epochs support this fencing. The `transactional.id` names the writer across many transactions; it is not a business event ID.
-
-Setting `transactional.id` enables transactional operation and implies producer idempotency. It does not deduplicate two independent committed transactions that contain the same business event. Its default is `null`, which allows only idempotent delivery. Call `initTransactions()` once before any other transactional method. A fenced old instance gets `ProducerFencedException`, which is fatal: its only option is to close. By default, transactions need a cluster of at least three brokers, set by the broker setting `transaction.state.log.replication.factor`.
-
-An epoch can change without a process restart. The newer transaction protocol used by compatible Kafka 4.0+ clients and brokers advances it for each transaction, so a duplicate from one transaction cannot be written as part of the next. The `transaction.version` cluster feature controls it. Servers enable it automatically since Kafka 4.0, and an existing cluster can turn it on with `transaction.version=2`. A producer switches only at the start of its next transaction, never midway.
-
-### What `read_committed` adds
-
-| Consumer setting | Records returned |
-| --- | --- |
-| `isolation.level=read_uncommitted` | Includes records from open and aborted transactions. |
-| `isolation.level=read_committed` | Returns committed transactional records and ordinary nontransactional records, subject to the partition's stable-offset boundary. |
-
-The default is `read_uncommitted`. A `read_committed` consumer reads only up to the **last stable offset**, the position just before the first still-open transaction. Records always come back in offset order, so an open transaction can hold back later records in its partition until the outcome is known. `read_committed` filters transaction visibility; it does not prevent replay or make a database update idempotent.
+The cluster lifeline groups the relevant brokers and coordinators. The diagram shows the application-level guarantee, not each internal protocol request.
 
 For a custom Kafka-to-Kafka worker:
 
@@ -289,9 +300,21 @@ A commit timeout can leave the result uncertain, so it must not be treated as pr
 
 Kafka Streams manages the transaction and state-recovery machinery with `processing.guarantee=exactly_once_v2`. Arbitrary local variables, external database writes, and API calls are outside its managed-state guarantee.
 
-## 3. End-to-end database effects: stable event ID and one DB transaction
+### When a transaction is not worth it
 
-Suppose event `e-123` means **decrease stock by one**. The consumer stores a processed marker with a unique key on `(handler, event_id)`. Use a stable logical handler name such as `inventory` so independent operations can process the same event separately.
+- **One independent record per `send()`:** the idempotent producer, on by default, already stops retry duplicates and keeps their order.
+- **Kafka to a database:** a Kafka transaction cannot include the database. Use the event ID marker in [section 3](#3-event-id-marker-a-replayed-event-changes-the-database-once).
+- **A database write, then a publish:** use the transactional outbox in [section 4](#4-transactional-outbox-a-database-change-and-its-event-both-or-neither).
+
+Transactions also cost something:
+
+- Each commit adds round trips to the transaction coordinator and writes a marker into every partition the transaction touched. Put many records in one transaction rather than one transaction per record.
+- `read_committed` readers cannot read past an open transaction, so a long transaction delays everyone reading those partitions.
+- All or nothing holds only for `read_committed` readers. A `read_uncommitted` reader, the default, sees records from open and aborted transactions.
+
+## 3. Event ID marker: a replayed event changes the database once
+
+Suppose event `e-123` means **decrease stock by one**. The consumer stores an **event ID marker**: a row with a unique key on `(handler, event_id)`, which records that this handler has processed this event. Use a stable logical handler name such as `inventory` so independent operations can process the same event separately.
 
 **Insert the marker and apply the stock update in the same database transaction. Commit the Kafka offset afterward.**
 
@@ -362,8 +385,151 @@ These conditions give one committed database effect per `(handler, event_id)` ev
 
 Using `(topic, partition, offset)` instead of a business event ID can suppress replay of the same Kafka record. It cannot recognize the same business event republished as a different record.
 
-If the producer must both update its own database and publish an event, that creates another commit gap before Kafka. The flows above begin with a reliably published event; protecting the source database-to-Kafka handoff requires an additional design, such as a transactional outbox. In an outbox, the service inserts the event into an outbox table in the same database transaction as its business change. A change-data-capture connector, such as Debezium, then reads those inserts from the database and publishes them to Kafka. With Debezium's outbox event router, the default columns are `id`, `aggregatetype`, `aggregateid`, `type`, and `payload`:
+## 4. Transactional outbox: a database change and its event, both or neither
+
+The sections above assume that the event reliably reaches Kafka. A service that must both update its own database and publish an event has one more commit gap, before Kafka. For example, the checkout service saves order `o-1` and publishes `OrderCreated`:
+
+| Order of the two writes | A crash in between |
+| --- | --- |
+| Commit the order, then publish | The order exists, but no event says so. Stock is never reserved. |
+| Publish, then commit the order | The event exists, but the order was never saved. Stock is reserved for an order that does not exist. |
+
+A Kafka transaction cannot close this gap, because it cannot include the database. A **transactional outbox** turns the two writes into one. The service inserts the event into an outbox table in the same database transaction as its business change. A change-data-capture (CDC) connector, such as Debezium, then reads those inserts from the database's transaction log and publishes them to Kafka.
+
+```mermaid
+sequenceDiagram
+    participant S as Checkout service
+    participant D as Checkout DB
+    participant C as CDC connector
+    participant K as Kafka
+
+    S->>D: BEGIN
+    S->>D: Insert order o-1
+    S->>D: Insert outbox row e-123 for OrderCreated
+    S->>D: COMMIT order and outbox row together
+    D-->>S: Committed
+
+    C->>D: Read the transaction log
+    D-->>C: Outbox row e-123
+    C->>K: Publish e-123 to orders
+    K-->>C: Stored
+
+    Note over C: Crash before saving<br/>its log position
+    Note over C: Connector restarts
+
+    C->>D: Read the log from the last saved position
+    D-->>C: Outbox row e-123 again
+    C->>K: Publish e-123 again, at a new offset
+    K-->>C: Stored
+    C->>C: Save log position
+
+    Note over S,K: Order saved once, event published at least once
+```
+
+The connector delivers at least once: after a restart, it can publish an event that it already published. Consumers drop the repeat with the event ID marker from [section 3](#3-event-id-marker-a-replayed-event-changes-the-database-once), so each outbox row needs a stable ID.
+
+With Debezium's outbox event router, the default columns are `id`, `aggregatetype`, `aggregateid`, `type`, and `payload`:
 
 - `aggregatetype` picks the topic, `outbox.event.<aggregatetype>` by default.
 - `aggregateid` becomes the record key, so one aggregate's events stay in order within a partition.
 - `id` travels in a record header and can serve as the stable `event_id` that consumers deduplicate on.
+
+## Putting it together: which mechanism, and where it stops
+
+Each mechanism above protects one boundary, and only that one:
+
+| Mechanism | What it protects | What it does not automatically protect |
+| --- | --- | --- |
+| [1. Idempotent producer](#1-idempotent-producer-a-retried-send-is-stored-once) | Automatic producer retries do not append duplicate records. | A new application-level `send()` of the same business event. |
+| [2. Kafka transaction](#2-kafka-transaction-several-kafka-writes-all-or-nothing) | The records it writes, and any input offsets it saves, take effect together or not at all. All of them must be in one Kafka cluster. | A database update, an HTTP request, or a write to another Kafka cluster. |
+| [3. Event ID marker](#3-event-id-marker-a-replayed-event-changes-the-database-once) | One committed database effect per logical event and handler. | Effects outside that database transaction. |
+| [4. Transactional outbox](#4-transactional-outbox-a-database-change-and-its-event-both-or-neither) | The event gets published if and only if the database change commits. | Duplicate publishes, because CDC usually delivers at least once. |
+
+### Which mechanism, when
+
+```mermaid
+flowchart TD
+    A{"What does the app do?"} -->|Only publishes to Kafka| B{"Several records that<br/>must appear together?"}
+    B -->|No| P1["Idempotent producer<br/>on by default"]
+    B -->|Yes| P2["Kafka transaction<br/>readers use read_committed"]
+    A -->|Reads Kafka, writes Kafka| P3["Kafka transaction<br/>with the input offsets in it<br/>readers use read_committed<br/>or Kafka Streams exactly_once_v2"]
+    A -->|Reads Kafka, writes a database| P4["Event ID marker<br/>in the same DB transaction<br/>Kafka offset saved after the DB commit"]
+    A -->|Writes its database, then publishes| P5["Transactional outbox<br/>published by CDC such as Debezium"]
+```
+
+Setting `transactional.id` also turns on idempotence, so a transactional producer is always idempotent too.
+
+### Boundaries in one pipeline
+
+Each mechanism covers one hop. In this order pipeline, every hop needs its own:
+
+```text
+Checkout DB --[A]--> orders --[B]--> stock-requests --[C]--> Inventory DB --[D]--> Email API
+```
+
+| Hop | Mechanism | Guarantee | Still possible |
+| --- | --- | --- | --- |
+| A: Checkout DB to `orders` | Transactional outbox and CDC | The event is published if and only if the order commits. | Usually at least once, so a connector restart can publish a duplicate. Readers deduplicate by `event_id`. |
+| B: `orders` to `stock-requests` | Kafka transaction in the worker | Each input produces its output once, as `read_committed` readers see it. | A duplicate from hop A is a new input, so it gets its own output. Side effects inside the worker, such as an HTTP call, can repeat. |
+| C: `stock-requests` to Inventory DB | Event ID marker in the same DB transaction, with the offset saved afterward | Stock goes down once per event. | The handler can run twice, so anything outside that DB transaction can repeat. |
+| D: Inventory DB to an email API | Nothing from Kafka | None by default. | A retry sends a second email, unless the API accepts an idempotency key such as `Idempotency-Key: e-123`. |
+
+Two rules connect the hops:
+
+- **Hop C's consumer must use `read_committed`.** Otherwise it can act on a record that hop B wrote and then aborted, and lower stock for an event that never happened.
+- **Hop B must copy each input's `event_id` into its output.** A duplicate from hop A reaches hop B as a new record, so hop B makes a second stock request. Hop C's marker can drop it only if both requests carry the same ID. When one input makes several outputs, derive their IDs from it, such as `e-123/1` and `e-123/2`.
+
+```mermaid
+sequenceDiagram
+    participant A as Outbox connector (hop A)
+    participant B as Worker (hop B)
+    participant C as Stock consumer (hop C)
+    participant D as Inventory DB
+
+    A->>B: orders: e-123
+    Note over A: Connector restarts
+    A->>B: orders: e-123 again, at a new offset
+    alt Hop B copies the event_id
+        B->>C: stock-requests: reserve 1, id e-123
+        B->>C: stock-requests: reserve 1, id e-123
+        C->>D: Insert marker e-123 and lower stock
+        C->>D: Insert marker e-123
+        D-->>C: Already exists, so skip the update
+        Note over C,D: Stock goes down once
+    else Hop B makes a new ID for each output
+        B->>C: stock-requests: reserve 1, id s-1
+        B->>C: stock-requests: reserve 1, id s-2
+        C->>D: Insert marker s-1 and lower stock
+        C->>D: Insert marker s-2 and lower stock
+        Note over C,D: Stock goes down twice
+    end
+```
+
+## Poison pills and dead-letter queues
+
+A **poison pill** is a record that repeatedly fails processing, such as malformed data or an unsupported schema.
+Retrying it indefinitely can stall its partition.
+A **dead-letter queue**, or **DLQ**, is an ordinary topic such as `orders.dlq` that preserves failed records for investigation and replay while other work continues.
+Kafka does not automatically create one for each topic; the consumer application decides when and where to publish failures.
+
+```mermaid
+flowchart LR
+    A["Process record"] --> B{"Succeeded?"}
+    B -->|Yes| C["Commit next offset"]
+    B -->|No| D{"Retryable and retries left?"}
+    D -->|Yes| E["Wait with backoff"]
+    E --> A
+    D -->|No| F["Publish to DLQ"]
+    F -->|Write acknowledged| C
+    F -->|Write failed| G["Do not advance committed offset<br/>Retry or alert"]
+```
+
+- Preserve the original key/value, source topic, partition, offset, and error details in the DLQ record.
+  For decoding failures, consuming raw bytes and decoding in the handler lets you capture the malformed record.
+- Disable auto-commit and never commit past unfinished earlier records in the partition.
+  Auto-commit is on by default and saves positions on a timer, so with asynchronous handling it can save a position past records still in progress, and a crash then skips them.
+  Publishing to a DLQ copies the record; it does not delete the original.
+- A crash between the DLQ write and offset commit can produce duplicate DLQ entries.
+  A [Kafka transaction](#2-kafka-transaction-several-kafka-writes-all-or-nothing) can commit both together, with DLQ consumers using `read_committed`.
+- Monitor the DLQ, fix the cause, and replay deliberately with duplicate handling.
+  Replay can change business-event order; if later events must wait, pause the affected partition instead of skipping ahead and keep polling to remain in the group.

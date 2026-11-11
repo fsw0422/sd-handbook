@@ -26,7 +26,7 @@ These are study notes. The book and its PDF are not included.
 ### Companion References
 
 - [Isolation Level Cheat Sheet](cheatsheets/isolation-level.md): anomaly tables and transaction timelines.
-- [Kafka Cheat Sheet](cheatsheets/kafka.md): brokers, partitions, consumer groups, idempotency, and database effects with diagrams.
+- [Kafka Cheat Sheet](cheatsheets/kafka.md): brokers, partitions, consumer groups, delivery guarantees, the idempotent producer, Kafka transactions, the event ID marker, and the transactional outbox, then which mechanism to use when and where each guarantee stops, plus dead-letter queues, with diagrams.
 - [Kubernetes Cheat Sheet](cheatsheets/k8s.md): core resources and diagrams, graceful shutdown, service meshes, sidecars, and rollout troubleshooting.
 - [DynamoDB Cheat Sheet](cheatsheets/dynamodb.md): keys, indexes, single-table design, capacity, Global Tables, DAX, and DynamoDB Streams versus Kinesis.
 - [gRPC and HTTP/2 Cheat Sheet](cheatsheets/grpc.md): Protobuf, multiplexing, channels, deadlines, retries, keepalive, and observability.
