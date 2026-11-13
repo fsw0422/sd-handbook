@@ -7,6 +7,46 @@ Generated client stubs handle message serialization and the call protocol.
 The examples below use HTTP/2 as the transport.
 A remote call can fail or time out even after the server has performed the requested work.
 
+### gRPC versus REST
+
+Both are ways to build an API on top of HTTP.
+REST, as most APIs use the word, puts a resource at each URL and acts on it with HTTP's own methods and status codes, usually with JSON bodies.
+gRPC exposes methods to call, and uses HTTP/2 only to carry the calls.
+Every call is a `POST` that a gRPC server answers with `200`; the call's own status follows in `grpc-status`.
+
+The example reads user 150, who exists, and user 999, who does not, with the `GetUser` method [defined below](#how-protobuf-works).
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    Note over C,S: REST
+    C->>S: GET /users/150
+    S-->>C: 200 OK with JSON {"name":"Amy"}
+    C->>S: GET /users/999
+    S-->>C: 404 Not Found
+
+    Note over C,S: gRPC
+    C->>S: POST /UserService/GetUser with user_id 150 in Protobuf
+    S-->>C: 200 with name "Amy" in Protobuf, then grpc-status 0
+    C->>S: POST /UserService/GetUser with user_id 999 in Protobuf
+    S-->>C: 200 with grpc-status 5, NOT_FOUND
+```
+
+The `200` only says that a gRPC server answered: a tool that watches HTTP status codes counts a failed call as a success.
+gRPC sends its status after the messages, so a streaming call can report how it ended.
+
+| | REST | gRPC |
+| --- | --- | --- |
+| Contract | Optional, such as an OpenAPI document. | Required, usually a `.proto` file; client and server code is generated from it. |
+| Messages | Usually JSON, which a person can read: `{"name":"Amy"}` is 14 bytes. | Usually Protobuf, which is binary and needs the schema to read: the same reply is [5 bytes](#encoding-the-string-amy). |
+| Streaming | One request, one response; a series of events needs an add-on such as server-sent events. | Built in: the client, the server, or both can send a series of messages in one call. |
+| Deadlines | Not built in; each client picks its own timeout. | Built in: the client's [deadline](#deadlines-and-retries) travels with the call. |
+| Caching | Browsers and CDNs can cache `GET` responses. | Rarely cached, because every call is a `POST`. |
+| Browsers | A page calls it with `fetch`. | A page cannot call it directly; it needs gRPC-Web, usually through a proxy. |
+| Good fit | Public APIs, browser clients, and reads that can be cached. | Calls between your own services, streaming, and many languages sharing one contract. |
+
 ## How Protobuf works
 
 Protocol Buffers, or Protobuf, defines structured messages and encodes them as binary data.
@@ -193,7 +233,7 @@ For HTTPS, TLS negotiates HTTP/2 using ALPN and the `h2` identifier.
 ALPN is a TLS handshake extension that lets the client and server agree on the application protocol.
 HTTP/2 also supports cleartext TCP when the peers already know to use HTTP/2; certificates are therefore not inherent to the protocol itself.
 
-WebSockets remain a separate protocol and can run over an HTTP/2 stream.
+WebSockets remain a separate protocol; see [HTTP/2 versus WebSockets](#http2-versus-websockets).
 
 ### HTTP/3 and QUIC
 
@@ -312,3 +352,177 @@ Useful signals to monitor:
 
 Compare these signals with call latency and deployment timing when investigating failures.
 For proxy behavior and draining during deployments, see the [Kubernetes cheat sheet](k8s.md#graceful-shutdown).
+
+## HTTP/2 versus WebSockets
+
+HTTP/2 changes how HTTP is carried, not how it works: the client sends a request, and the server answers it.
+WebSocket is a separate protocol: after one HTTP handshake, either side can send a message at any time.
+
+The examples below use a chat page where Alice sends messages and receives Bob's.
+
+### HTTP/2: the client opens every stream
+
+To receive messages as they happen, the client leaves one request open, and the server keeps adding to its response.
+Each message Alice sends is a separate request on its own stream.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    Note over C,S: One HTTP/2 connection
+    C->>S: GET /messages on stream 1
+    S-->>C: Response on stream 1 starts and stays open
+    S-->>C: "Bob: hi" on stream 1
+    C->>S: POST /messages "Alice: hello" on stream 3
+    S-->>C: Complete response on stream 3
+    S-->>C: "Bob: bye" on stream 1
+```
+
+- In a browser, the open response is usually a server-sent events (SSE) stream, read with `EventSource`.
+  Over HTTP/1.1, each open response uses up one of the six connections a browser allows per domain; over HTTP/2, it is one more stream on the shared connection.
+- Between services, gRPC streaming calls use the same streams.
+  In a bidirectional streaming call, the request stays open too, so both sides send messages on one stream.
+  A browser hands a page the response only after the request is fully sent, so gRPC-Web offers server streaming but not bidirectional streaming.
+- HTTP/2 server push was the one case where the server opened a stream, and it is not a way to send messages.
+  It sent a resource, such as a stylesheet, before the browser requested it, and browsers have since turned it off.
+
+### WebSocket: one handshake, then either side sends
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    C->>S: GET /chat with Upgrade: websocket
+    S-->>C: 101 Switching Protocols
+    Note over C,S: Same TCP connection<br/>Now carries WebSocket messages
+    S->>C: "Bob: hi"
+    C->>S: "Alice: hello"
+    S->>C: "Bob: bye"
+```
+
+The handshake shown is HTTP/1.1, and the WebSocket then takes over the whole TCP connection.
+When client and server both support it, a WebSocket can instead run on one HTTP/2 stream and share the connection with other requests.
+
+### Side by side
+
+| | HTTP/2 | WebSocket |
+| --- | --- | --- |
+| Who can send | The client starts every exchange with a request; the server answers on that stream. | Either side, at any time after the handshake. |
+| What is sent | Requests and responses with headers; each response has a status and belongs to its request. | Text or binary messages with no HTTP headers or status; the application decides what they mean and which message answers which. |
+| Parallel exchanges | Built in: one stream each, sharing a connection. | Not built in: one WebSocket carries one ordered sequence of messages in each direction. |
+| Backpressure | Flow control per stream and per connection. | None of its own; it relies on TCP. |
+| Browser API | `fetch` for a request and response; `EventSource` for a stream of server events. | `WebSocket`, for sending and receiving. |
+| Good fit | APIs, gRPC between services, and one-way updates to a browser, such as notifications. | A browser and server that both send often, such as chat, shared editing, or games. |
+
+In a browser, a WebSocket is worth it when both sides send often: `fetch` cannot send and receive at the same time on one stream, so each message from the page would be its own request.
+When only the server sends often, an SSE stream on HTTP/2 does the job without a second protocol.
+Outside a browser, one HTTP/2 stream already carries both directions, as in a gRPC bidirectional streaming call, so a WebSocket adds little.
+
+### Backpressure
+
+Backpressure means a slow receiver makes the sender slow down, instead of unread data piling up in memory.
+
+HTTP/2 builds it in as flow control.
+The receiver hands out credit in bytes, per stream and for the whole connection, and a sender that runs out must wait.
+It needs its own because streams share one TCP connection: the receiver cannot stop reading one stream's bytes without stopping them all.
+The diagram follows one stream's credit; the connection's credit works the same way.
+
+```mermaid
+sequenceDiagram
+    participant S as Sender
+    participant R as Receiver
+
+    Note over S,R: By default, a stream starts<br/>with 65,535 bytes of credit
+    S->>R: DATA frames, 65,535 bytes in total
+    Note over S: Out of credit<br/>Must wait
+    Note over R: Application reads<br/>40,000 bytes
+    R->>S: WINDOW_UPDATE, 40,000 more bytes of credit
+    S->>R: DATA frames, up to 40,000 bytes
+```
+
+gRPC streaming calls rely on this: when the receiver falls behind, a write waits or the stream reports that it is not ready, depending on the language.
+
+WebSocket adds no flow control of its own; it relies on TCP's.
+The browser's `WebSocket` API does not pass that on to the page: `send()` only queues data, with `bufferedAmount` showing how much is waiting, and incoming messages are delivered whether or not the page keeps up.
+
+Backpressure only makes a sender wait.
+When the data keeps coming, as in a live feed, the server still needs a rule for a client that stays slow.
+For example, a feed produces 1,000 messages per second and a phone on a weak network reads 200.
+The server's queue for that client grows by 800 messages per second, so a limit of 16,000 messages is reached in 20 seconds.
+At the limit, drop what can be dropped, such as all but the latest price, or close the connection and let the client reconnect and catch up.
+
+### Scaling WebSocket servers
+
+A WebSocket stays on the server that accepted it until it closes, so a load balancer chooses a server only once, when the client connects.
+Capacity is counted in open connections rather than requests per second: each one holds memory and a socket even when idle.
+
+With several servers, Alice and Bob can be connected to different ones.
+The servers share a publish/subscribe system, such as Redis Pub/Sub, so a message reaches whichever server holds the recipient's connection.
+
+```mermaid
+sequenceDiagram
+    participant A as Alice
+    participant S1 as Server 1
+    participant P as Pub/sub
+    participant S2 as Server 2
+    participant B as Bob
+
+    Note over A,S1: Alice's WebSocket
+    Note over S2,B: Bob's WebSocket
+    S2->>P: Subscribe to room 7 for Bob
+    A->>S1: "Alice: hello" for room 7
+    S1->>P: Publish to room 7
+    P->>S2: "Alice: hello"
+    S2->>B: "Alice: hello"
+```
+
+- Adding servers does not move existing connections; only new connections reach the new servers.
+- When a server shuts down, all of its clients reconnect at once.
+  Clients should retry with backoff and jitter, a growing and randomized delay, and the server should drain as described under [graceful shutdown](k8s.md#graceful-shutdown).
+- After reconnecting, a client says which message it saw last, and the server sends what it missed.
+  That needs the messages stored somewhere: Redis Pub/Sub loses a message for any subscriber that is disconnected when it is published.
+- Long-lived HTTP/2 streams, such as SSE and gRPC streams, need the same design.
+  SSE helps with one part: the browser reconnects by itself and, when events carry IDs, sends the last one it received in the `Last-Event-ID` header.
+
+### WebTransport: streams and datagrams over HTTP/3
+
+WebTransport is a newer way for a browser page and a server to send to each other at any time.
+It solves a problem that a WebSocket cannot: a WebSocket is one ordered sequence of messages, so when a packet is lost, every message behind it waits until that packet is sent again.
+
+For example, a game page sends its player's position 30 times a second, and chat messages, on one WebSocket.
+When position 2 is lost, position 3 and a chat message wait until it is sent again, although position 3 has already replaced it.
+
+WebTransport runs over HTTP/3: one request opens a session, and inside it either side can open streams or send datagrams.
+
+- A stream delivers its data reliably and in order, like a WebSocket.
+  A session can hold many, and because they are [QUIC streams](#http3-and-quic), lost data on one does not delay the others.
+  The chat messages get their own stream.
+- A datagram is a message that fits in one packet; it may be lost or arrive out of order, and is never sent again.
+  That suits data that is useless when late: the next position replaces a lost one.
+
+```mermaid
+sequenceDiagram
+    participant P as Game page
+    participant S as Server
+
+    Note over P,S: WebSocket
+    P-xS: Position 2, lost
+    P->>S: Position 3
+    P->>S: Chat message "good game"
+    Note over S: Both are held back<br/>until position 2 arrives
+    P->>S: Position 2, sent again
+    Note over S: Gets all three<br/>in order but late
+
+    Note over P,S: WebTransport
+    P-xS: Position 2 as a datagram, lost
+    P->>S: Position 3 as a datagram
+    P->>S: "good game" on a stream
+    Note over S: Gets both right away<br/>Position 2 is never sent again
+```
+
+Streams also pass [backpressure](#backpressure) on to the page, which the `WebSocket` API does not.
+
+WebTransport has worked in all major browsers only since March 2026, and the server must support HTTP/3.
+A WebSocket remains the simpler default; WebTransport is worth it when a page needs datagrams or several independent streams.

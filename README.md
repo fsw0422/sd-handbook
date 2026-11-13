@@ -29,7 +29,7 @@ These are study notes. The book and its PDF are not included.
 - [Kafka Cheat Sheet](cheatsheets/kafka.md): brokers, partitions, consumer groups, delivery guarantees, the idempotent producer, Kafka transactions, the event ID marker, and the transactional outbox, then which mechanism to use when and where each guarantee stops, plus dead-letter queues, with diagrams.
 - [Kubernetes Cheat Sheet](cheatsheets/k8s.md): core resources and diagrams, graceful shutdown, service meshes, sidecars, and rollout troubleshooting.
 - [DynamoDB Cheat Sheet](cheatsheets/dynamodb.md): keys, indexes, single-table design, capacity, Global Tables, DAX, and DynamoDB Streams versus Kinesis.
-- [gRPC and HTTP/2 Cheat Sheet](cheatsheets/grpc.md): Protobuf, multiplexing, channels, deadlines, retries, keepalive, and observability.
+- [gRPC and HTTP/2 Cheat Sheet](cheatsheets/grpc.md): gRPC versus REST, Protobuf, multiplexing, channels, deadlines, retries, keepalive, observability, HTTP/2 versus WebSockets, backpressure, scaling WebSocket servers, and WebTransport.
 - [Service Boundaries and Testing Cheat Sheet](cheatsheets/testing.md): domain ownership, ports and adapters, test boundaries, and gradual module extraction.
 - [OAuth Cheat Sheet](cheatsheets/oauth.md): how OAuth works with Google as the example, application-only access, tokens and client types, the code-interception attack PKCE stops, and session binding.
 - [OIDC Cheat Sheet](cheatsheets/oidc.md): what OIDC adds to OAuth, sign-in with Google, ID token validation, and how many apps sharing one IdP gives SSO.
