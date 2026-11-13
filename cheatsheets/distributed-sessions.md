@@ -79,7 +79,7 @@ Decoded header of a JWS access token:
 { "alg": "RS256", "typ": "at+jwt", "kid": "2026-10-key-1" }
 ```
 
-`alg` names the signing algorithm, `kid` selects a key from the issuer's published key set, and `typ` marks the token as an access token. The API checks `typ` and accepts only algorithms it has configured. It never lets the token header choose. JWT libraries must let the caller fix the allowed algorithms, refuse all others, and use each key with exactly one algorithm. This blocks a forged header that switches `alg` to `none`, or from RS256 to HS256 so the RSA public key is misused as an HMAC secret. Explicit typing is recommended for new kinds of JWT, so a token issued for one purpose cannot pass as another.
+`alg` names the signing algorithm, `kid` selects a key from the issuer's [published key set](#where-the-verification-key-comes-from), and `typ` marks the token as an access token. The API checks `typ` and accepts only algorithms it has configured. It never lets the token header choose. JWT libraries must let the caller fix the allowed algorithms, refuse all others, and use each key with exactly one algorithm. This blocks a forged header that switches `alg` to `none`, or from RS256 to HS256 so the RSA public key is misused as an HMAC secret. Explicit typing is recommended for new kinds of JWT, so a token issued for one purpose cannot pass as another.
 
 ### What JWS gives you
 
@@ -94,7 +94,66 @@ Decoded header of a JWS access token:
 
 Base64url is an encoding, not encryption. Keep secrets and unneeded personal data out of JWS payloads.
 
-HMAC algorithms such as HS256 sign and verify with one shared secret, so every verifier can also create tokens. They fit a service that issues and checks its own tokens. The key must be at least as long as the hash output, so at least 256 bits for HS256. Verifiers must compare the MAC in constant time to avoid timing attacks. [signatures and public-key encryption](tls-docsign.md#symmetric-and-asymmetric-cryptography)
+HMAC algorithms such as HS256 sign and verify with one shared secret, so every verifier can also create tokens. They fit a service that issues and checks its own tokens. The key must be at least as long as the hash output, so at least 256 bits for HS256. Verifiers must compare the MAC in constant time to avoid timing attacks. [signatures and public-key encryption](cryptography.md#symmetric-and-asymmetric-cryptography)
+
+### Where the verification key comes from
+
+**The issuer publishes its public keys at an HTTPS URL, and each API downloads and caches them.** The API needs only the issuer's URL in its configuration. It never takes a key from the token itself.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as orders-api
+    participant Issuer
+
+    Note over API: Configured with the issuer<br/>https://auth.example.com
+    API->>Issuer: GET https://auth.example.com<br/>/.well-known/oauth-authorization-server
+    Issuer-->>API: 200 OK<br/>issuer: https://auth.example.com<br/>jwks_uri: https://auth.example.com/jwks
+    API->>Issuer: GET https://auth.example.com/jwks
+    Issuer-->>API: 200 OK<br/>Key set with public key 2026-10-key-1
+    Note over API: Caches the key set
+    Client->>API: Request with a token<br/>Header kid: 2026-10-key-1
+    API->>API: Pick key 2026-10-key-1 from the cache<br/>Verify the signature
+    API-->>Client: 200 OK
+```
+
+1. **Configuration:** an operator gives the API the issuer's URL. The API trusts this URL and finds everything else through it. It is also the `iss` value the API expects in tokens.
+2. **Discovery:** the API fetches the issuer's metadata document, which lists `jwks_uri`. OAuth servers publish it at `/.well-known/oauth-authorization-server`, and OpenID Connect providers at `/.well-known/openid-configuration`, as [Google's endpoints](oidc.md#what-oidc-adds-to-oauth) show. The API must reject a document whose `issuer` differs from the configured issuer URL.
+3. **Key set:** `jwks_uri` returns a JSON Web Key Set, or JWKS: the issuer's public keys as JSON. The API caches it.
+4. **Verification:** for each token, the API picks the cached key that the header's `kid` names and verifies the signature with it. It does not call the issuer.
+
+The JWT access token profile recommends this route: the authorization server should advertise its signing keys through `jwks_uri` in its metadata.
+
+A key set with one RSA signing key:
+
+```json
+{
+  "keys": [
+    {
+      "kty": "RSA",
+      "use": "sig",
+      "alg": "RS256",
+      "kid": "2026-10-key-1",
+      "n": "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4...",
+      "e": "AQAB"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `kty` | The key type, here RSA. |
+| `use` | `sig` marks a signing key, and `enc` an encryption key. |
+| `alg` | The algorithm the key is meant for. |
+| `kid` | The key ID that a token's header points at. |
+| `n`, `e` | The public key itself: the RSA modulus and exponent in base64url. `n` is shortened here, because a 2048-bit modulus takes 342 characters. `AQAB` is the common exponent 65537. |
+
+The key set holds only public keys, so it needs no secrecy. It needs integrity, and HTTPS provides it: the issuer's TLS certificate vouches for the keys that verify its tokens, as [the chain of trust](cryptography.md#certificate-authorities-and-the-chain-of-trust) shows.
+
+- **Rotation:** a key set can hold several keys. The issuer adds a new key, starts signing with it, and keeps the old key published until the tokens it signed have expired. An API that sees an unknown `kid` downloads the key set again. Limit how often it does so, because anyone can send tokens with made-up `kid` values. [Key rings and key rotation](cryptography.md#key-rings-and-key-rotation) shows the pattern.
+- **Never take the key from the token:** a JWS header can carry the public key itself in `jwk`, or the URL of a key set in `jku`. An attacker can sign a token with their own key and name that key in the header, so an API that follows these headers accepts forged tokens. Fetching a `jku` URL also lets the attacker make the API call an address of their choice. The key must belong to the issuer named in `iss`, so the API takes it only from the key set of an issuer it has configured.
+- **Without discovery:** the API can instead be configured with the `jwks_uri`, or with the public key itself. A key fixed in configuration cannot rotate without a change to every API.
 
 ### What JWE gives you
 
@@ -103,7 +162,7 @@ HMAC algorithms such as HS256 sign and verify with one shared secret, so every v
 | Benefit | How it helps |
 | --- | --- |
 | Confidentiality | Only the holder of the decryption key can read the claims. The browser, proxies, and logs see ciphertext. |
-| Protection after TLS | TLS protects one connection. Tokens also sit in browser storage, log lines, and later hops, where JWE still hides the claims. See [where TLS protection ends](tls-docsign.md#where-tls-protection-ends). |
+| Protection after TLS | TLS protects one connection. Tokens also sit in browser storage, log lines, and later hops, where JWE still hides the claims. See [where TLS protection ends](cryptography.md#where-tls-protection-ends). |
 | Recipient targeting | A token encrypted to one API's public key is readable only by that API. `aud` asks other services to reject a token, while encryption stops them from reading it. |
 | Tamper detection | JWE requires authenticated encryption, so a modified token fails to decrypt. The required `enc` header must name an AEAD algorithm with a specified key length, such as `A256GCM`. If the authentication tag does not match, the recipient rejects the token without releasing any plaintext. |
 
@@ -166,7 +225,7 @@ For JWT access tokens, the access token profile turns steps 1 and 2 into require
 1. `typ` is `at+jwt` or `application/at+jwt`. Any other value is rejected.
 2. `iss` exactly matches the expected issuer.
 3. `aud` contains the API's own identifier.
-4. The signature verifies with a key provided by the authorization server. A token with `alg` set to `none` is rejected.
+4. The signature verifies with a [key provided by the authorization server](#where-the-verification-key-comes-from). A token with `alg` set to `none` is rejected.
 5. The current time is before `exp`, with an optional small leeway for clock skew.
 
 Any failed check returns an `invalid_token` error.

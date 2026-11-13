@@ -84,7 +84,7 @@ Before signing the user in, validate the ID token:
 
 | Check | Why |
 | --- | --- |
-| Signature, with the provider's JWKS keys | The token really came from Google and was not changed. |
+| Signature, with the provider's [JWKS keys](distributed-sessions.md#where-the-verification-key-comes-from) | The token really came from Google and was not changed. |
 | `iss` | It was issued by the expected provider. |
 | `aud` equals your `client_id` | It was issued to your app, not to another app. |
 | `exp` | It has not expired. |

@@ -4,7 +4,7 @@ A passkey replaces a password with a key pair.
 The private key stays on the user's device or in their passkey manager, and the server stores only the public key.
 To sign in, the device signs a fresh challenge from the server after the user unlocks it with a face, a fingerprint, or the screen lock PIN.
 WebAuthn is the browser and operating system API that creates and uses passkeys.
-Key pairs and signatures are explained in the [HTTP and TLS cheat sheet](tls-docsign.md#symmetric-and-asymmetric-cryptography).
+Key pairs and signatures are explained in the [cryptography cheat sheet](cryptography.md#symmetric-and-asymmetric-cryptography).
 
 ## The idea in one picture
 
