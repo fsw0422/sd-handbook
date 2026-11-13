@@ -21,7 +21,7 @@ Each section also notes which PostgreSQL isolation level, if any, uses that mode
 | Write skew | Transactions update different rows after reading a shared condition, and together violate that condition. |
 
 The category tables assume each task keeps its related reads and writes in one transaction, and all concurrent transactions use the stated isolation model.
-**Possible** means the model permits the anomaly without additional protection.
+**Possible** means the model permits the anomaly without [additional protection](#two-controls-the-isolation-level-and-the-query).
 **Prevented** means the model rules it out, aborting conflicting transactions when necessary.
 Each **Possible** entry links to an example that states which isolation models it applies to.
 
@@ -96,8 +96,9 @@ sequenceDiagram
     Note over DB: Final counter = 43<br/>One increment was lost
 ```
 
-Protect read-then-write logic with a SQL update based on the current row value, an appropriate lock held across the read and write, or an update conditional on an expected version.
-Handle a failed version check by retrying or reporting the conflict.
+Protect read-then-write logic with a SQL update based on the current row value, an appropriate lock held across the read and write, or an update conditional on the expected value of a version column.
+Handle a failed check by retrying or reporting the conflict.
+[One Lost Update, Three Fixes](#one-lost-update-three-fixes) shows the lock and the check, next to raising the isolation level.
 
 ## Read Committed with MVCC
 
@@ -288,6 +289,7 @@ sequenceDiagram
 - Transactions can execute concurrently when their locks are compatible.
 - Two-phase locking can enforce serializability, with range or predicate protection where needed to prevent phantoms.
 - Conflicting operations may block, and deadlocks may require aborting and retrying a transaction.
+- The standard example of **pessimistic concurrency control (lock)**: it expects conflicts, so a transaction waits until the data it needs is safe to use.
 
 **PostgreSQL:** not offered.
 Its `SERIALIZABLE` level uses [Serializable Snapshot Isolation](#serializable-snapshot-isolation) instead.
@@ -358,6 +360,7 @@ If both transactions read before either writes, as in the other sections, each t
 - Transactions run concurrently, but one may be aborted to preserve serializable results.
 - Conflicting row updates may still wait for writers.
 - Applications must be prepared to retry the entire transaction after a serialization failure.
+- The standard example of **optimistic concurrency control**: it expects no conflict, so a transaction continues instead of waiting, and the database checks it at commit.
 
 **PostgreSQL:** `SERIALIZABLE` uses this model.
 
@@ -393,6 +396,8 @@ sequenceDiagram
 
 ### Conflict and Recovery: Serialization Failure
 
+This is the doctor scenario that causes write skew under the weaker models.
+Serializable snapshot isolation prevents it: both transactions run without waiting, and the database rolls back the one that commits second.
 The writes affect different rows, so there is no write/write conflict.
 Each transaction acts on a premise it read at the start: two doctors are on call.
 The database records each read, and when the other transaction writes a row that was read, it notes that the read may be outdated, without blocking.
@@ -547,3 +552,109 @@ sequenceDiagram
 3. Lock rows before reading them for an update, for example with `SELECT ... FOR UPDATE`, instead of upgrading a shared lock later.
 4. Catch deadlock and serialization errors, roll back, and retry the entire transaction.
    In PostgreSQL, a deadlock victim fails with SQLSTATE `40P01` and a serialization failure with `40001`.
+
+## Two Controls: The Isolation Level and the Query
+
+The isolation level is a setting, and the sections above show what each setting protects.
+A query can also carry protection of its own, such as a lock or a check.
+The two are separate controls, and one transaction can use both.
+
+| | Isolation level | Lock or check in a query |
+| --- | --- | --- |
+| What it is | A setting. | Extra SQL in one query. |
+| Where it is set | As the database default, for a session, or for one transaction. | In each query that needs it. |
+| What it covers | Every read and write in the transaction. | Only the rows of that query. |
+| Who applies it | The database, to every query. | The application code, query by query. |
+| Example | `BEGIN ISOLATION LEVEL SERIALIZABLE` | `SELECT ... FOR UPDATE`, or `UPDATE ... WHERE version = 7` |
+
+**PostgreSQL:** the default level is `READ COMMITTED`, set by `default_transaction_isolation`.
+`BEGIN ISOLATION LEVEL ...` sets the level for one transaction.
+
+### One Lost Update, Three Fixes
+
+All three fixes protect the counter in the [lost update](#possible-anomaly-lost-update) example.
+
+Fix 1 changes the setting, and the queries stay plain.
+
+```sql
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+SELECT counter FROM counters WHERE id = 1;
+UPDATE counters SET counter = 43 WHERE id = 1;
+COMMIT;
+```
+
+Fix 2 keeps `READ COMMITTED` and adds a lock to the read.
+`SELECT ... FOR UPDATE` reads the row and locks it until the transaction ends.
+
+```sql
+BEGIN;
+SELECT counter FROM counters WHERE id = 1 FOR UPDATE;  -- returns 42 and locks the row
+UPDATE counters SET counter = 43 WHERE id = 1;
+COMMIT;                                                -- releases the lock
+```
+
+Fix 3 keeps `READ COMMITTED` and adds a check to the write.
+The table gets a version column, and the update changes the row only if that column still holds the value that was read.
+
+```sql
+SELECT counter, version FROM counters WHERE id = 1;  -- returns 42 and version 7, no lock
+
+UPDATE counters
+SET counter = 43, version = 8
+WHERE id = 1 AND version = 7;                        -- 1 row updated: success. 0 rows: conflict
+```
+
+- The version column is ordinary data that the application maintains.
+  It is not the row versions that MVCC keeps inside the database.
+- The check is safe only if the database tests the condition against the row's latest committed version, which PostgreSQL's read committed does, as [Read Committed with MVCC](#read-committed-with-mvcc) describes.
+- DDIA calls this check compare-and-set.
+
+| | Fix 1: the setting | Fix 2: a lock in the query | Fix 3: a check in the query |
+| --- | --- | --- | --- |
+| A second transaction on the same row | Fails with SQLSTATE `40001` in PostgreSQL, and the application reruns it. | Waits until the first one commits. | Updates 0 rows, and the application retries or reports the conflict. |
+| Works only if | Every transaction that reads and then writes the counter uses that level. | Every such transaction takes the lock. Under MVCC, an ordinary `SELECT` does not wait for it. | Every write checks the version column and raises it. |
+
+Fix 2 applies the pessimistic concurrency control of [Serializable Isolation with Locks](#serializable-isolation-with-locks) to one row, and fix 3 applies the optimistic concurrency control of [Serializable Snapshot Isolation](#serializable-snapshot-isolation).
+A single statement such as `UPDATE counters SET counter = counter + 1 WHERE id = 1` needs none of the three, because the database reads and writes the current value in one step.
+
+### Which One to Change
+
+```mermaid
+flowchart TD
+    Risk["An anomaly is possible,<br/>such as a lost update"] --> Level{"Does the isolation level<br/>prevent it?"}
+    Level -->|Yes| Nothing["Nothing to add"]
+    Level -->|No| Where{"Where is the risk?"}
+    Where -->|"In many places,<br/>or hard to find"| Setting["Change the setting:<br/>raise the isolation level"]
+    Where -->|"In a few known queries"| Query["Change the query:<br/>add a lock or a check"]
+```
+
+- **The anomaly tables show the setting alone.**
+  **Possible** means possible without extra SQL.
+  A lock or a check in the query can prevent the anomaly for the rows of that query.
+- **A higher level costs every transaction that uses it.**
+  Serializable Isolation with Locks adds waiting and deadlocks, and Serializable Snapshot Isolation adds retries.
+  Read committed is the default in PostgreSQL, Oracle, and SQL Server, so applications often keep it and add SQL where a read-then-write needs it.
+- **A lock or a check covers less than a serializable level.**
+  It protects only the chosen rows, and only if every code path uses it.
+  [Lock or Check](#lock-or-check) lists the limits.
+- **A check also works where no level can.**
+  No isolation level connects a read and a write that are in separate transactions, such as an edit form that stays open.
+  A check on a version column does.
+
+### Lock or Check
+
+| | Lock in the query | Check in the query |
+| --- | --- | --- |
+| Conflicts are | Common, such as one stock row during a flash sale. | Rare, such as two admins editing the same profile. |
+| The read and the write are | Close together, in one short transaction. | Possibly far apart, such as an edit form that stays open for minutes. |
+| Risk | [Deadlocks](#deadlocks), and one slow transaction blocks the others. | Many retries when conflicts are frequent, and each retry redoes the work. |
+
+Both protect a row that is read and then written, which leaves two limits:
+
+- **Write skew:** in the doctor [write skew](#possible-anomaly-write-skew), each transaction updates a different row, so a version column on each doctor's row does not help.
+  Lock the rows that the decision depends on, with `SELECT name FROM doctors WHERE on_call = true FOR UPDATE`.
+  Under read committed, the second transaction waits and then sees that only one doctor remains on call.
+- **Phantoms:** when the decision depends on no matching row existing, such as a free meeting room or an unused username, there is no row to lock or to check.
+  Use a unique constraint where one fits, or a serializable isolation level.
+
+Both serializable models rule out both cases without extra SQL.
