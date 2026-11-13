@@ -130,9 +130,88 @@ flowchart TD
     Q1 -->|"An attacker: whoever runs the mirror"| Q2{"Can you get the correct hash from a place the attacker can't change?"}
     Q2 -->|"Yes: it is on the project's own HTTPS page"| H["Cryptographic hash"]
     Q2 -->|"No: it is on the mirror too"| Q3{"Can everyone who verifies be trusted with the secret key?"}
-    Q3 -->|"Yes: only your own servers download the file"| M["MAC"]
-    Q3 -->|"No: anyone may download the file"| SG["Digital signature"]
+    Q3 -->|"Yes: only your own servers download the file"| M["MAC (symmetric)"]
+    Q3 -->|"No: anyone may download the file"| SG["Digital signature (asymmetric)"]
 ```
+
+#### Cryptographic hash
+
+A hash has no key, so it only works when the expected hash reaches you by a safe path.
+Here the project shows it on its own HTTPS page:
+
+```mermaid
+sequenceDiagram
+    participant P as Project's own<br/>HTTPS page
+    participant Y as You
+    participant M as Attacker's mirror
+
+    P->>Y: Expected hash of the real file
+    Note over M: Can change the file,<br/>but not the hash<br/>on the project's page
+    M->>Y: Changed file
+    Note over Y: Hash the file you got<br/>and compare.<br/>They differ: caught
+```
+
+1. **Publish:** the project hashes the file with SHA-256 and shows the hash on its own HTTPS page.
+2. **Check:** you hash the file you downloaded and compare the two hashes.
+   A match means you have the file that the project hashed.
+3. **Tamper:** the attacker changes the file on the mirror.
+   They can compute the hash of the changed file, because a hash needs no key, but they can't put it on the project's page.
+   The two hashes differ, and you reject the file.
+
+A hash that sits on the mirror protects nothing: the attacker replaces the file and its hash together.
+
+#### MAC
+
+A MAC is symmetric: one secret key creates it and checks it.
+Here your build server publishes the file, and only your own app servers download it:
+
+```mermaid
+sequenceDiagram
+    participant B as Build server<br/>(has the key)
+    participant M as Attacker's mirror<br/>(no key)
+    participant A as App server<br/>(has the key)
+
+    Note over B: Compute the MAC from<br/>the file and the key
+    B->>M: File, not encrypted, plus the MAC
+    Note over M: Can read and change<br/>the file, but can't<br/>compute a new MAC
+    M->>A: Changed file, plus the old MAC
+    Note over A: Compute the MAC again<br/>with the key.<br/>They differ: caught
+```
+
+1. **Share the key:** the build server and the app servers get the same secret key in private, such as from a secret store.
+2. **Create:** the build server computes the MAC from the file and the key, with HMAC-SHA256, and sends it with the file.
+3. **Check:** an app server computes the MAC again, from the file it received and the same key, and compares the two.
+   A match means the file is unchanged and came from a key holder.
+4. **Tamper:** the attacker can read and change the file, but can't compute the matching MAC without the key.
+
+Whoever can check a MAC can also create one, so the key goes only to machines you trust.
+
+#### Digital signature
+
+A signature is asymmetric: the private key signs, and the public key only verifies.
+Here the project signs the file, and anyone may download it:
+
+```mermaid
+sequenceDiagram
+    participant P as Project<br/>(private key)
+    participant M as Attacker's mirror<br/>(no private key)
+    participant Y as You<br/>(public key)
+
+    Note over P: Hash the file,<br/>sign the hash with<br/>the private key
+    P->>M: File, not encrypted, plus the signature
+    Note over M: Can read and change<br/>the file, but can't<br/>make a new signature
+    M->>Y: Changed file, plus the old signature
+    Note over Y: Hash the file, check<br/>the signature with<br/>the public key.<br/>No match: caught
+```
+
+1. **Get the public key:** it is not secret, but it must really be the project's key, so you take it from a source you trust.
+   apt, for example, uses [the archive keys that ship with the system](#apt-one-signature-then-a-chain-of-hashes).
+2. **Sign:** the project hashes the file and signs the hash with its private key.
+   The signature travels with the file.
+3. **Verify:** you hash the file you received and use the public key to check that the signature belongs to that hash.
+4. **Tamper:** the attacker can change the file and has the public key too, but a new signature needs the private key.
+
+[How a digital signature works](#how-a-digital-signature-works-with-a-tls-certificate) shows the same steps with a TLS certificate.
 
 ## Encryption: keeping data secret
 
