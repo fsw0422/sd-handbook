@@ -125,26 +125,14 @@ A signed JWT is checked with the same steps, as [what JWS gives you](distributed
 
 ```mermaid
 flowchart TD
-    S(["You download a file from a mirror"]) --> Q1{"Who might change the file?"}
+    S(["Example: you download a file from a mirror"]) --> Q1{"Who might change the data?"}
     Q1 -->|"Only accidents: the download breaks"| C["Checksum"]
-    Q1 -->|"An attacker: whoever runs the mirror"| Q2{"Is the file's hash on the project's own HTTPS page?"}
-    Q2 -->|"Yes"| H["Cryptographic hash"]
-    Q2 -->|"No, it is on the mirror too"| Q3{"Do only your own servers download the file?"}
-    Q3 -->|"Yes"| M["MAC"]
-    Q3 -->|"No, anyone does"| SG["Digital signature"]
+    Q1 -->|"An attacker: whoever runs the mirror"| Q2{"Can you get the correct hash from a place the attacker can't change?"}
+    Q2 -->|"Yes: it is on the project's own HTTPS page"| H["Cryptographic hash"]
+    Q2 -->|"No: it is on the mirror too"| Q3{"Can everyone who verifies be trusted with the secret key?"}
+    Q3 -->|"Yes: only your own servers download the file"| M["MAC"]
+    Q3 -->|"No: anyone may download the file"| SG["Digital signature"]
 ```
-
-The chart follows one example.
-For other data, ask the general question behind each step:
-
-| General question | In the example | Answer | Leads to |
-| --- | --- | --- | --- |
-| Who might change the data? | You trust the mirror, so the file can only break on the way | Only accidents | Checksum |
-| | Whoever runs the mirror could swap the file | An attacker | The next question |
-| Can you get the correct hash from a place the attacker can't change? | The file's hash is on the project's HTTPS page, which the mirror can't edit | Yes | Cryptographic hash |
-| | The file's hash is a second file on the same mirror | No | The next question |
-| Can everyone who verifies be trusted with the secret key? | Only your own servers download the file | Yes | MAC |
-| | Anyone may download the file | No | Digital signature |
 
 ## Encryption: keeping data secret
 
